@@ -77,7 +77,6 @@ cortest <- function(intput_dat, y, cov.mod = NULL, a, b) {
   set.seed(123)
   aa <- intput_dat[a:b, ]
   
-  # Handle case when there's only one row
   if (nrow(aa) <= 1) {
     op.num <- 1
   } else {
@@ -85,14 +84,15 @@ cortest <- function(intput_dat, y, cov.mod = NULL, a, b) {
     unique_points <- nrow(aa[, -c(1, 2)])
     max_possible_k <- min(unique_points - 1, 4)
     
-    # Only try k values that are valid
     possible_ks <- 1:max_possible_k
     possible_ks <- possible_ks[possible_ks > 0 & possible_ks <= unique_points]
     
     for (k in possible_ks) {
       cls <- tryCatch(
         {
-          kmeans(aa[, -c(1, 2)], centers = k)
+          tmp_data <- aa[, -c(1, 2)]
+          tmp_data <- t(apply(tmp_data, 1, function(x) { x[is.na(x)] <- mean(x, na.rm = TRUE); if(all(is.na(x))) x <- rep(0, length(x)); x }))
+          kmeans(tmp_data, centers = k)
         },
         error = function(e) NULL
       )
@@ -105,31 +105,30 @@ cortest <- function(intput_dat, y, cov.mod = NULL, a, b) {
     op.num <- ifelse(length(cls.num) > 0, max(cls.num), 1)
   }
   
-  # Final clustering with optimal number of clusters
   if (op.num > 1) {
-    cls.op <- kmeans(aa[, -c(1, 2)], centers = op.num)
+    tmp_data_final <- aa[, -c(1, 2)]
+    tmp_data_final <- t(apply(tmp_data_final, 1, function(x) { x[is.na(x)] <- mean(x, na.rm = TRUE); if(all(is.na(x))) x <- rep(0, length(x)); x }))
+    cls.op <- kmeans(tmp_data_final, centers = op.num)
     x.mean <- cls.op$centers
     NR <- nrow(x.mean)
     x <- as.numeric(unlist(x.mean))
   } else {
-    x <- as.numeric(colMeans(aa[, -c(1, 2)]))
+    x <- as.numeric(colMeans(aa[, -c(1, 2)], na.rm = TRUE))
     NR <- 1
   }
   
-  # Prepare data for linear model
-  y <- rep(as.numeric(y[, 1]), each = NR)
+  y_val <- rep(as.numeric(y[, 1]), each = NR)
   
   if (!is.null(cov.mod)) {
-    lm.dat <- data.frame(y, x, cov.mod[rep(seq_len(nrow(cov.mod)), each = NR), ])
+    lm.dat <- data.frame(y = y_val, x, cov.mod[rep(seq_len(nrow(cov.mod)), each = NR), ])
   } else {
-    lm.dat <- data.frame(y, x)
+    lm.dat <- data.frame(y = y_val, x)
   }
   
-  # Fit linear model
   fit <- summary(lm(y ~ ., data = lm.dat))
   p_value <- fit$coef[2, 4]
   coef_lm <- fit$coef[2, 1]
-  cor_est <- cor(lm.dat$y, lm.dat$x) 
+  cor_est <- cor(lm.dat$y, lm.dat$x, use = "complete.obs") 
   
   return(c(p_value, coef_lm, cor_est))
 }
@@ -139,7 +138,8 @@ cortest <- function(intput_dat, y, cov.mod = NULL, a, b) {
 calcSingleDiffSum<-function(intput_dat,y){
 	calcCR<-function(x){
 		x<-as.numeric(x)
-		res<-cor(x,y,method = "pearson")
+		res <- cor(x, y, method = "pearson", use = "complete.obs")
+		if(is.na(res)) res <- 0
 		return(res)
 	}
 	correlation<-apply(intput_dat[,-c(1,2)],1,calcCR)
@@ -331,8 +331,8 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley){
 			if(b$p_value>1){
 				if(is.null(tmp)){
 					tmp<-b
-					methX<-mean(as.numeric(data.matrix(intput_dat[tmp$start:tmp$stop,-c(1,2)])),na.rm=T)
-					methY<-mean(as.numeric(data.matrix(y)),na.rm=T)
+					methX <- mean(as.numeric(as.matrix(intput_dat[tmp$start:tmp$stop, -c(1, 2)])), na.rm = TRUE)
+					methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
 					tmp$methX<-methX
 					tmp$methY<-methY
 				}else{
@@ -346,8 +346,8 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley){
 					}
 					if(ks[1]<2){
 						out<-data.frame(chr=chr,start=intput_dat$pos[tmp$start]-1,stop=intput_dat$pos[tmp$stop],q=-1,length=tmp$stop-tmp$start+1,cor_est = ks[3],coef_lm=ks[2],p_value=ks[1])
-						methX<-mean(as.numeric(data.matrix(intput_dat[tmp$start:tmp$stop,-c(1,2)])),na.rm=T)
-						methY<-mean(as.numeric(data.matrix(y)),na.rm=T)
+						methX <- mean(as.numeric(as.matrix(intput_dat[tmp$start:tmp$stop, -c(1, 2)])), na.rm = TRUE)
+						methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
 						out$methX<-methX
 						out$methY<-methY
 						outputList<-rbind(outputList,as.data.frame(out))
@@ -355,8 +355,8 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley){
 					tmp<-NULL
 				}
 				out<-data.frame(chr=chr,start=intput_dat$pos[b$start]-1,stop=intput_dat$pos[b$stop],q=-1,length=b$stop-b$start+1,cor_est =b$cor_est,coef_lm=b$coef_lm,p_value=b$p_value)
-				methX<-mean(as.numeric(data.matrix(intput_dat[b$start:b$stop,-c(1,2)])),na.rm=T)
-				methY<-mean(as.numeric(data.matrix(y)),na.rm=T)
+				methX <- mean(as.numeric(as.matrix(intput_dat[b$start:b$stop, -c(1, 2)])), na.rm = TRUE)
+				methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
 				out$methX<-methX
 				out$methY<-methY
 				outputList<-rbind(outputList,as.data.frame(out))
@@ -370,8 +370,8 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley){
 		}
 		if(ks[1]<2){
 			out<-data.frame(chr=chr,start=intput_dat$pos[tmp$start]-1,stop=intput_dat$pos[tmp$stop],q=-1,length=tmp$stop-tmp$start+1,cor_est = ks[3],coef_lm=ks[2],p_value=ks[1])
-			methX<-mean(as.numeric(data.matrix(intput_dat[tmp$start:tmp$stop,-c(1,2)])),na.rm=T)
-			methY<-mean(as.numeric(data.matrix(y)),na.rm=T)
+			methX <- mean(as.numeric(as.matrix(intput_dat[tmp$start:tmp$stop, -c(1, 2)])), na.rm = TRUE)
+			methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
 			out$methX<-methX
 			out$methY<-methY
 			outputList<-rbind(outputList,as.data.frame(out))
@@ -392,4 +392,3 @@ segmentation<-function(intput_dat,y,cov.mod,chr,mincpgs,trend,valley){
 	outputList<-output(intput_dat,y,cov.mod,XS,globalbreaks,chr,mincpgs,trend,valley)
 	return (outputList)
 }
-

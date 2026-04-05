@@ -1,10 +1,10 @@
-#' AMRfinder: A function to perform segmentation analysis on DNA methylation data using the AMR method.
+#' AMRfinder: Main function for segmentation analysis
 #'
-#' @param intput_dat A matrix containing input data with columns 'chr', 'pos', and CpG values.
-#' @param y A vector or matrix representing the response variable.
-#' @param cov.mod An optional data frame of covariates to include in the model.
+#' @param intput_dat The input data matrix.
+#' @param y The response variable vector.
+#' @param cov.mod A data frame of covariates.
 #' @param controllist A list of control parameters
-#' @return A data frame with segmentation results including chr, start, end, #CpGs, correlation estimates, coefficients, p-values, methX, methY, and FDR.
+#' @return A data frame with segmentation results including p-values, coefficients, etc.
 #' @export
 AMRfinder <- function(intput_dat, y, cov.mod = NULL, controlist = list(
                            maxdist = 300, maxseg = -1, mincpgs = 5, threads = 1, mode = 1, mtc = 1, name = "sample", trend = 0.6,
