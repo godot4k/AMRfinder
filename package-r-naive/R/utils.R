@@ -72,6 +72,10 @@ is_contiguous <- function(x) {
 cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
   set.seed(123)
   aa <- intput_dat[a:b, ]
+  y_group <- as.numeric(y[, 1])
+  if (!all(y_group %in% c(0, 1))) {
+    stop("For control/test mode, y must be coded as 0 for control and 1 for test.")
+  }
   if (nrow(aa) <= 1) {
     op.num <- 1
   } else {
@@ -106,30 +110,41 @@ cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
     x <- as.numeric(colMeans(aa[, -c(1, 2)], na.rm = TRUE))
     NR <- 1
   }
-  y_val <- rep(as.numeric(y[, 1]), each = NR)
-  if (!is.null(cov.mod)) {
-    lm.dat <- data.frame(y = y_val, x, cov.mod[rep(seq_len(nrow(cov.mod)), each = NR), ])
-  } else {
-    lm.dat <- data.frame(y = y_val, x)
+  y_val <- rep(y_group, each = NR)
+  control_x <- x[y_val == 0]
+  test_x <- x[y_val == 1]
+  if (length(control_x) == 0 || length(test_x) == 0) {
+    stop("Both control (0) and test (1) samples are required for KS testing.")
   }
-  fit <- summary(lm(y ~ ., data = lm.dat))
-  p_value <- fit$coef[2, 4]
-  coef_lm <- fit$coef[2, 1]
-  cor_est <- cor(lm.dat$y, lm.dat$x, use = "complete.obs", method = method) 
-  return(c(p_value, coef_lm, cor_est))
+  p_value <- suppressWarnings(ks.test(control_x, test_x)$p.value)
+  if (!is.finite(p_value)) p_value <- 1
+  ks_stat <- as.numeric(suppressWarnings(ks.test(control_x, test_x)$statistic))
+  if (!is.finite(ks_stat)) ks_stat <- 0
+  mean_diff <- mean(test_x, na.rm = TRUE) - mean(control_x, na.rm = TRUE)
+  if (!is.finite(mean_diff)) mean_diff <- 0
+  return(c(p_value, mean_diff, ks_stat))
 }
 
 calcSingleDiffSum<-function(intput_dat,y){
-  calcCR<-function(x){
+  y_group <- as.numeric(y[, 1])
+  if (!all(y_group %in% c(0, 1))) {
+    stop("For control/test mode, y must be coded as 0 for control and 1 for test.")
+  }
+  control_id <- which(y_group == 0)
+  test_id <- which(y_group == 1)
+  if (length(control_id) == 0 || length(test_id) == 0) {
+    stop("Both control (0) and test (1) samples are required.")
+  }
+  calcDiff<-function(x){
     x<-as.numeric(x)
-    res <- cor(x, y, method = "pearson", use = "complete.obs")
+    res <- mean(x[test_id], na.rm = TRUE) - mean(x[control_id], na.rm = TRUE)
     if(is.na(res)) res <- 0
     return(res)
   }
-  correlation<-apply(intput_dat[,-c(1,2)],1,calcCR)
-  smean<-cumsum(as.numeric(correlation))
+  mean_difference<-apply(intput_dat[,-c(1,2)],1,calcDiff)
+  smean<-cumsum(as.numeric(mean_difference))
   absmean<-abs(smean)
-  sigm<-sign(correlation)
+  sigm<-sign(mean_difference)
   sigsum<-cumsum(sigm)
   S<-cbind(absmean,smean,sigsum)
   return(S)
@@ -184,7 +199,7 @@ segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,K
               child<-0
               ab[1]<--1
             }else{
-              bre<-list(chr=chr,start=n,stop=m,p_value=ks1[1],coef_lm=ks1[2],cor_est=ks1[3])
+              bre<-list(chr=chr,start=n,stop=m,p_value=ks1[1],mean_diff=ks1[2],ks_stat=ks1[3])
               breaks<-rbind(breaks,data.frame(bre))
             }
           }
@@ -201,7 +216,7 @@ segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,K
               child<-0
               ab[1]<--1
             }else{
-              bre<-list(chr=chr,start=n,stop=m,p_value=ks2[1],coef_lm=ks2[2],cor_est=ks2[3])
+              bre<-list(chr=chr,start=n,stop=m,p_value=ks2[1],mean_diff=ks2[2],ks_stat=ks2[3])
               breaks<-rbind(breaks,data.frame(bre))
             }
           }
@@ -218,14 +233,14 @@ segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,K
               child<-0
               ab[1]<--1
             }else{
-              bre<-list(chr=chr,start=n,stop=m,p_value=ks3[1],coef_lm=ks3[2],cor_est=ks3[3])
+              bre<-list(chr=chr,start=n,stop=m,p_value=ks3[1],mean_diff=ks3[2],ks_stat=ks3[3])
               breaks<-rbind(breaks,data.frame(bre))
             }
           }
         }
       }else{
         if(child==0){
-          bre<-list(chr=chr,start=a,stop=b,p_value=KS[1],coef_lm=KS[2],cor_est=KS[3])
+          bre<-list(chr=chr,start=a,stop=b,p_value=KS[1],mean_diff=KS[2],ks_stat=KS[3])
           breaks<-rbind(breaks,data.frame(bre))
         }
         a<--1
@@ -304,6 +319,17 @@ segmenterSTK<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,KS,m
 output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method){
   tmp<-NULL
   outputList<-NULL
+  collapseTmp<-function(tmp){
+    if(!is.null(tmp)){
+      tmp<-as.data.frame(tmp)
+      start<-min(as.numeric(unlist(tmp$start)))
+      stop<-max(as.numeric(unlist(tmp$stop)))
+      tmp<-tmp[1,]
+      tmp$start<-start
+      tmp$stop<-stop
+    }
+    return(tmp)
+  }
   nbreaks<-nrow(global)
   if(nbreaks>0){
     for(i in 1:nbreaks){
@@ -320,13 +346,16 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
         }
       }else{
         if(!is.null(tmp)){
+          tmp<-collapseTmp(tmp)
+          tmp_start<-as.integer(as.numeric(unlist(tmp$start))[1])
+          tmp_stop<-as.integer(as.numeric(unlist(tmp$stop))[1])
           ks<-c(2,2)
-          if(tmp$stop-tmp$start+1>=mincpgs&&calcSingleTrendAbs(XS,tmp$start,tmp$stop)>trend&&noValley(XS,tmp$start,tmp$stop,mincpgs,valley)){
-            ks<-cortest(intput_dat,y, method, cov.mod,tmp$start,tmp$stop)
+          if(isTRUE((tmp_stop-tmp_start+1>=mincpgs)[1])&&isTRUE((calcSingleTrendAbs(XS,tmp_start,tmp_stop)>trend)[1])&&isTRUE((noValley(XS,tmp_start,tmp_stop,mincpgs,valley)==1)[1])){
+            ks<-cortest(intput_dat,y, method, cov.mod,tmp_start,tmp_stop)
           }
           if(ks[1]<2){
-            out<-data.frame(chr=chr,start=intput_dat$pos[tmp$start]-1,stop=intput_dat$pos[tmp$stop],q=-1,length=tmp$stop-tmp$start+1,cor_est = ks[3],coef_lm=ks[2],p_value=ks[1])
-            methX <- mean(as.numeric(as.matrix(intput_dat[tmp$start:tmp$stop, -c(1, 2)])), na.rm = TRUE)
+            out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,ks_stat = ks[3],mean_diff=ks[2],p_value=ks[1])
+            methX <- mean(as.numeric(as.matrix(intput_dat[tmp_start:tmp_stop, -c(1, 2)])), na.rm = TRUE)
             methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
             out$methX<-methX
             out$methY<-methY
@@ -334,7 +363,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
           }
           tmp<-NULL
         }
-        out<-data.frame(chr=chr,start=intput_dat$pos[b$start]-1,stop=intput_dat$pos[b$stop],q=-1,length=b$stop-b$start+1,cor_est =b$cor_est,coef_lm=b$coef_lm,p_value=b$p_value)
+        out<-data.frame(chr=chr,start=intput_dat$pos[b$start]-1,stop=intput_dat$pos[b$stop],q=-1,length=b$stop-b$start+1,ks_stat =b$ks_stat,mean_diff=b$mean_diff,p_value=b$p_value)
         methX <- mean(as.numeric(as.matrix(intput_dat[b$start:b$stop, -c(1, 2)])), na.rm = TRUE)
         methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
         out$methX<-methX
@@ -344,13 +373,16 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
     }
   }
   if(!is.null(tmp)){
+    tmp<-collapseTmp(tmp)
+    tmp_start<-as.integer(as.numeric(unlist(tmp$start))[1])
+    tmp_stop<-as.integer(as.numeric(unlist(tmp$stop))[1])
     ks<-c(2,2)
-    if(tmp$stop-tmp$start+1>=mincpgs&&calcSingleTrendAbs(XS,tmp$start,tmp$stop)>trend&&noValley(XS,tmp$start,tmp$stop,mincpgs,valley)){
-      ks<-cortest(intput_dat,y, method, cov.mod,tmp$start,tmp$stop)
+    if(isTRUE((tmp_stop-tmp_start+1>=mincpgs)[1])&&isTRUE((calcSingleTrendAbs(XS,tmp_start,tmp_stop)>trend)[1])&&isTRUE((noValley(XS,tmp_start,tmp_stop,mincpgs,valley)==1)[1])){
+      ks<-cortest(intput_dat,y, method, cov.mod,tmp_start,tmp_stop)
     }
     if(ks[1]<2){
-      out<-data.frame(chr=chr,start=intput_dat$pos[tmp$start]-1,stop=intput_dat$pos[tmp$stop],q=-1,length=tmp$stop-tmp$start+1,cor_est = ks[3],coef_lm=ks[2],p_value=ks[1])
-      methX <- mean(as.numeric(as.matrix(intput_dat[tmp$start:tmp$stop, -c(1, 2)])), na.rm = TRUE)
+      out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,ks_stat = ks[3],mean_diff=ks[2],p_value=ks[1])
+      methX <- mean(as.numeric(as.matrix(intput_dat[tmp_start:tmp_stop, -c(1, 2)])), na.rm = TRUE)
       methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
       out$methX<-methX
       out$methY<-methY
