@@ -112,12 +112,12 @@ cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
   }
   y_val <- rep(y_group, each = NR)
   if (!is.null(cov.mod)) {
-    lm.dat <- data.frame(y = y_val, x, cov.mod[rep(seq_len(nrow(cov.mod)), each = NR), ])
+    lm.dat <- data.frame(meth = x, group = y_val, cov.mod[rep(seq_len(nrow(cov.mod)), each = NR), ])
   } else {
-    lm.dat <- data.frame(y = y_val, x)
+    lm.dat <- data.frame(meth = x, group = y_val)
   }
   fit <- tryCatch(
-    suppressWarnings(summary(glm(y ~ ., data = lm.dat, family = binomial()))),
+    suppressWarnings(summary(lm(meth ~ ., data = lm.dat))),
     error = function(e) NULL
   )
   if (is.null(fit) || nrow(fit$coef) < 2) {
@@ -129,7 +129,7 @@ cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
     if (!is.finite(p_value)) p_value <- 1
     if (!is.finite(coef_glm)) coef_glm <- 0
   }
-  cor_est <- cor(lm.dat$y, lm.dat$x, use = "complete.obs", method = method)
+  cor_est <- cor(lm.dat$group, lm.dat$meth, use = "complete.obs", method = method)
   if (!is.finite(cor_est)) cor_est <- 0
   return(c(p_value, coef_glm, cor_est))
 }
