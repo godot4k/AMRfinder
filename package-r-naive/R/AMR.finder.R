@@ -49,5 +49,6 @@ AMRfinder <- function(intput_dat, y, cov.mod = NULL, controlist = list(
   }
   colnames(nfo$outputList)[-4] <- c("chr", "start", "end", "N.CpGs", "ks_stat", "mean_diff", "p_value", "methX", "methY", "e_value")
   nfo$outputList$FDR <- p.adjust(nfo$outputList$p_value, method = "BH")
+  nfo$outputList$e_adjust <- adjustEValueBH(nfo$outputList$e_value)
   return(nfo$outputList[, -4])
 }

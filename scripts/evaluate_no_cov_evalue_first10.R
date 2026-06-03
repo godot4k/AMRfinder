@@ -4,7 +4,9 @@ input_root <- file.path(base_dir, "simulation_amrfinder_input")
 runs_env <- Sys.getenv("RUNS", unset = "1,2,3,4,5,6,7,8,9,10")
 runs <- as.integer(strsplit(runs_env, ",", fixed = TRUE)[[1]])
 evalue_cutoff <- as.numeric(Sys.getenv("EVALUE_CUTOFF", unset = "20"))
+score_column <- Sys.getenv("EVALUE_SCORE_COLUMN", unset = "e_adjust")
 cutoff_label <- gsub("[^0-9A-Za-z]+", "_", format(evalue_cutoff, trim = TRUE, scientific = FALSE))
+score_label <- gsub("[^0-9A-Za-z]+", "_", score_column)
 
 calc_evalue_for_region <- function(region_dat, y_group) {
   sample_mean <- colMeans(region_dat, na.rm = TRUE)
@@ -46,18 +48,36 @@ calc_evalue_for_region <- function(region_dat, y_group) {
   exp(log_e_value)
 }
 
+adjust_evalue_bh <- function(e_value) {
+  p_value <- rep(1, length(e_value))
+  finite_id <- is.finite(e_value) & e_value > 0
+  p_value[finite_id] <- pmin(1, 1 / e_value[finite_id])
+  p_value[is.infinite(e_value) & e_value > 0] <- 0
+
+  adjusted_p <- p.adjust(p_value, method = "BH")
+  e_adjust <- rep(1, length(adjusted_p))
+  zero_id <- adjusted_p == 0
+  positive_id <- adjusted_p > 0
+  e_adjust[zero_id] <- Inf
+  e_adjust[positive_id] <- 1 / adjusted_p[positive_id]
+  e_adjust[!is.finite(e_adjust) & !zero_id] <- 1
+  e_adjust
+}
+
 add_evalue <- function(pred, dat, y_group) {
-  if ("e_value" %in% names(pred)) {
-    return(pred)
+  if (!"e_value" %in% names(pred)) {
+    pred$e_value <- vapply(seq_len(nrow(pred)), function(i) {
+      idx <- which(dat$chr == pred$chr[i] & dat$pos > pred$start[i] & dat$pos <= pred$end[i])
+      if (length(idx) == 0) {
+        return(1)
+      }
+      calc_evalue_for_region(dat[idx, -c(1, 2), drop = FALSE], y_group)
+    }, numeric(1))
   }
 
-  pred$e_value <- vapply(seq_len(nrow(pred)), function(i) {
-    idx <- which(dat$chr == pred$chr[i] & dat$pos > pred$start[i] & dat$pos <= pred$end[i])
-    if (length(idx) == 0) {
-      return(1)
-    }
-    calc_evalue_for_region(dat[idx, -c(1, 2), drop = FALSE], y_group)
-  }, numeric(1))
+  if (!"e_adjust" %in% names(pred)) {
+    pred$e_adjust <- adjust_evalue_bh(pred$e_value)
+  }
 
   pred
 }
@@ -83,9 +103,9 @@ evaluate_evalue <- function(run) {
   truth_file <- file.path(run_dir, "truth", "DMRs_unDMRs_signal.bed")
   result_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.tsv", run))
   evalue_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.evalue.tsv", run))
-  filtered_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.evalue_gt_%s.tsv", run, cutoff_label))
-  coverage_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.evalue_gt_%s.testR_truth_coverage.tsv", run, cutoff_label))
-  metrics_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.testR_metrics_evalue_gt_%s.tsv", run, cutoff_label))
+  filtered_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.%s_gt_%s.tsv", run, score_label, cutoff_label))
+  coverage_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.%s_gt_%s.testR_truth_coverage.tsv", run, score_label, cutoff_label))
+  metrics_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.testR_metrics_%s_gt_%s.tsv", run, score_label, cutoff_label))
 
   if (!file.exists(result_file)) {
     stop("Missing no.cov result file for run ", run, ": ", result_file)
@@ -96,9 +116,13 @@ evaluate_evalue <- function(run) {
   y_group <- c(rep(0, 8), rep(1, 8))
 
   pred_all <- add_evalue(pred_all, dat, y_group)
+  if (!score_column %in% names(pred_all)) {
+    stop("Missing score column: ", score_column)
+  }
   write.table(pred_all, evalue_file, sep = "\t", quote = FALSE, row.names = FALSE)
 
-  pred <- pred_all[!is.na(pred_all$e_value) & pred_all$e_value > evalue_cutoff, , drop = FALSE]
+  score_value <- pred_all[[score_column]]
+  pred <- pred_all[!is.na(score_value) & score_value > evalue_cutoff, , drop = FALSE]
   write.table(pred, filtered_file, sep = "\t", quote = FALSE, row.names = FALSE)
 
   truth <- read.table(truth_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE)
@@ -130,8 +154,9 @@ evaluate_evalue <- function(run) {
 
   metrics <- data.frame(
     run = run,
-    method = "dmr.no.cov.evalue",
+    method = paste0("dmr.no.cov.", score_column),
     cutoff = evalue_cutoff,
+    score_column = score_column,
     ACC = (tp + tn) / (tp + fn + fp + tn),
     FDR = ifelse((fp + tp) == 0, NA_real_, fp / (fp + tp)),
     Type_I_error = ifelse((fp + tn) == 0, NA_real_, fp / (fp + tn)),
@@ -156,7 +181,7 @@ evaluate_evalue <- function(run) {
 
 summary_dir <- file.path(input_root, "batch_results")
 dir.create(summary_dir, showWarnings = FALSE, recursive = TRUE)
-summary_file <- file.path(summary_dir, sprintf("run10_no_cov_evalue_gt_%s_metrics_summary.tsv", cutoff_label))
+summary_file <- file.path(summary_dir, sprintf("run10_no_cov_%s_gt_%s_metrics_summary.tsv", score_label, cutoff_label))
 
 all_metrics <- do.call(rbind, lapply(runs, evaluate_evalue))
 write.table(all_metrics, summary_file, sep = "\t", quote = FALSE, row.names = FALSE)

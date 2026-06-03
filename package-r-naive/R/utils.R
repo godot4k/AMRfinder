@@ -196,6 +196,22 @@ calcEValue <- function(intput_dat, y, a, b) {
   exp(log_e_value)
 }
 
+adjustEValueBH <- function(e_value) {
+  p_value <- rep(1, length(e_value))
+  finite_id <- is.finite(e_value) & e_value > 0
+  p_value[finite_id] <- pmin(1, 1 / e_value[finite_id])
+  p_value[is.infinite(e_value) & e_value > 0] <- 0
+
+  adjusted_p <- p.adjust(p_value, method = "BH")
+  e_adjust <- rep(1, length(adjusted_p))
+  zero_id <- adjusted_p == 0
+  positive_id <- adjusted_p > 0
+  e_adjust[zero_id] <- Inf
+  e_adjust[positive_id] <- 1 / adjusted_p[positive_id]
+  e_adjust[!is.finite(e_adjust) & !zero_id] <- 1
+  e_adjust
+}
+
 segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,KS,method){
   stacks<-NULL
   breaks<-NULL
