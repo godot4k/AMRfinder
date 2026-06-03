@@ -64,11 +64,6 @@ noValley<-function(S,s,t,mincpgs,valley){
   return (1)
 }
 
-is_contiguous <- function(x) {
-  rle_x <- rle(x)
-  length(unique(rle_x$values)) == length(rle_x$values)
-}
-
 cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
   set.seed(123)
   aa <- intput_dat[a:b, ]
@@ -76,43 +71,10 @@ cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
   if (!all(y_group %in% c(0, 1))) {
     stop("For control/test mode, y must be coded as 0 for control and 1 for test.")
   }
-  if (nrow(aa) <= 1) {
-    op.num <- 1
-  } else {
-    cls.num <- NULL
-    unique_points <- nrow(aa[, -c(1, 2)])
-    max_possible_k <- min(unique_points - 1, 4)
-    possible_ks <- 1:max_possible_k
-    possible_ks <- possible_ks[possible_ks > 0 & possible_ks <= unique_points]
-    for (k in possible_ks) {
-      cls <- tryCatch(
-        {
-          tmp_data <- aa[, -c(1, 2)]
-          tmp_data <- t(apply(tmp_data, 1, function(x) { x[is.na(x)] <- mean(x, na.rm = TRUE); if(all(is.na(x))) x <- rep(0, length(x)); x }))
-          kmeans(tmp_data, centers = k)
-        },
-        error = function(e) NULL
-      )
-      if (!is.null(cls) && is_contiguous(as.numeric(cls$cluster))) {
-        cls.num <- c(cls.num, k)
-      }
-    }
-    op.num <- ifelse(length(cls.num) > 0, max(cls.num), 1)
-  }
-  if (op.num > 1) {
-    tmp_data_final <- aa[, -c(1, 2)]
-    tmp_data_final <- t(apply(tmp_data_final, 1, function(x) { x[is.na(x)] <- mean(x, na.rm = TRUE); if(all(is.na(x))) x <- rep(0, length(x)); x }))
-    cls.op <- kmeans(tmp_data_final, centers = op.num)
-    x.mean <- cls.op$centers
-    NR <- nrow(x.mean)
-    x <- as.numeric(unlist(x.mean))
-  } else {
-    x <- as.numeric(colMeans(aa[, -c(1, 2)], na.rm = TRUE))
-    NR <- 1
-  }
-  y_val <- rep(y_group, each = NR)
+  x <- as.numeric(colMeans(aa[, -c(1, 2), drop = FALSE], na.rm = TRUE))
+  y_val <- y_group
   if (!is.null(cov.mod)) {
-    lm.dat <- data.frame(y = y_val, x, cov.mod[rep(seq_len(nrow(cov.mod)), each = NR), ])
+    lm.dat <- data.frame(y = y_val, x, cov.mod)
   } else {
     lm.dat <- data.frame(y = y_val, x)
   }
@@ -120,12 +82,12 @@ cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
     suppressWarnings(summary(glm(y ~ ., data = lm.dat, family = binomial()))),
     error = function(e) NULL
   )
-  if (is.null(fit) || nrow(fit$coef) < 2) {
+  if (is.null(fit) || !("x" %in% rownames(fit$coef))) {
     p_value <- 1
     coef_glm <- 0
   } else {
-    p_value <- fit$coef[2, 4]
-    coef_glm <- fit$coef[2, 1]
+    p_value <- fit$coef["x", 4]
+    coef_glm <- fit$coef["x", 1]
     if (!is.finite(p_value)) p_value <- 1
     if (!is.finite(coef_glm)) coef_glm <- 0
   }
