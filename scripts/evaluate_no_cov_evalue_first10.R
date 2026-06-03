@@ -4,6 +4,7 @@ input_root <- file.path(base_dir, "simulation_amrfinder_input")
 runs_env <- Sys.getenv("RUNS", unset = "1,2,3,4,5,6,7,8,9,10")
 runs <- as.integer(strsplit(runs_env, ",", fixed = TRUE)[[1]])
 evalue_cutoff <- as.numeric(Sys.getenv("EVALUE_CUTOFF", unset = "20"))
+cutoff_label <- gsub("[^0-9A-Za-z]+", "_", format(evalue_cutoff, trim = TRUE, scientific = FALSE))
 
 calc_evalue_for_region <- function(region_dat, y_group) {
   sample_mean <- colMeans(region_dat, na.rm = TRUE)
@@ -82,9 +83,9 @@ evaluate_evalue <- function(run) {
   truth_file <- file.path(run_dir, "truth", "DMRs_unDMRs_signal.bed")
   result_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.tsv", run))
   evalue_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.evalue.tsv", run))
-  filtered_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.evalue_gt_20.tsv", run))
-  coverage_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.evalue_gt_20.testR_truth_coverage.tsv", run))
-  metrics_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.testR_metrics_evalue_gt_20.tsv", run))
+  filtered_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.evalue_gt_%s.tsv", run, cutoff_label))
+  coverage_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.evalue_gt_%s.testR_truth_coverage.tsv", run, cutoff_label))
+  metrics_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.testR_metrics_evalue_gt_%s.tsv", run, cutoff_label))
 
   if (!file.exists(result_file)) {
     stop("Missing no.cov result file for run ", run, ": ", result_file)
@@ -155,7 +156,7 @@ evaluate_evalue <- function(run) {
 
 summary_dir <- file.path(input_root, "batch_results")
 dir.create(summary_dir, showWarnings = FALSE, recursive = TRUE)
-summary_file <- file.path(summary_dir, "run10_no_cov_evalue_metrics_summary.tsv")
+summary_file <- file.path(summary_dir, sprintf("run10_no_cov_evalue_gt_%s_metrics_summary.tsv", cutoff_label))
 
 all_metrics <- do.call(rbind, lapply(runs, evaluate_evalue))
 write.table(all_metrics, summary_file, sep = "\t", quote = FALSE, row.names = FALSE)
