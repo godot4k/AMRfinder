@@ -150,6 +150,52 @@ calcSingleDiffSum<-function(intput_dat,y){
   return(S)
 }
 
+calcEValue <- function(intput_dat, y, a, b) {
+  y_group <- as.numeric(y[, 1])
+  if (!all(y_group %in% c(0, 1))) {
+    stop("For e-value calculation, y must be coded as 0 for control and 1 for test.")
+  }
+
+  region_dat <- intput_dat[a:b, -c(1, 2), drop = FALSE]
+  sample_mean <- colMeans(region_dat, na.rm = TRUE)
+  control_x <- sample_mean[y_group == 0]
+  test_x <- sample_mean[y_group == 1]
+  control_x <- control_x[is.finite(control_x)]
+  test_x <- test_x[is.finite(test_x)]
+
+  if (length(control_x) < 2 || length(test_x) < 2) {
+    return(1)
+  }
+
+  group_var <- function(x) mean((x - mean(x))^2)
+  control_var <- group_var(control_x)
+  test_var <- group_var(test_x)
+  pooled_x <- c(control_x, test_x)
+  pooled_var <- group_var(pooled_x)
+
+  if (!is.finite(pooled_var) || pooled_var <= 0) {
+    return(1)
+  }
+  if (!is.finite(control_var) || control_var <= 0 || !is.finite(test_var) || test_var <= 0) {
+    return(.Machine$double.xmax)
+  }
+
+  n_control <- length(control_x)
+  n_test <- length(test_x)
+  log_e_value <- ((n_control + n_test) / 2) * log(pooled_var) -
+    (n_control / 2) * log(control_var) -
+    (n_test / 2) * log(test_var)
+
+  if (!is.finite(log_e_value) || log_e_value <= 0) {
+    return(1)
+  }
+  if (log_e_value >= log(.Machine$double.xmax)) {
+    return(.Machine$double.xmax)
+  }
+
+  exp(log_e_value)
+}
+
 segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,KS,method){
   stacks<-NULL
   breaks<-NULL
@@ -359,6 +405,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
             methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
             out$methX<-methX
             out$methY<-methY
+            out$e_value<-calcEValue(intput_dat,y,tmp_start,tmp_stop)
             outputList<-rbind(outputList,as.data.frame(out))
           }
           tmp<-NULL
@@ -368,6 +415,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
         methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
         out$methX<-methX
         out$methY<-methY
+        out$e_value<-calcEValue(intput_dat,y,b$start,b$stop)
         outputList<-rbind(outputList,as.data.frame(out))
       }
     }
@@ -386,6 +434,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
       methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
       out$methX<-methX
       out$methY<-methY
+      out$e_value<-calcEValue(intput_dat,y,tmp_start,tmp_stop)
       outputList<-rbind(outputList,as.data.frame(out))
     }
     tmp<-NULL
