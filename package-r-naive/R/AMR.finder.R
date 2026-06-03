@@ -50,6 +50,6 @@ AMRfinder <- function(intput_dat, y, cov.mod = NULL, controlist = list(
   colnames(nfo$outputList)[-4] <- c("chr", "start", "end", "N.CpGs", "ks_stat", "mean_diff", "p_value", "methX", "methY", "e_value")
   nfo$outputList$FDR <- p.adjust(nfo$outputList$p_value, method = "BH")
   nfo$outputList$e_adjust <- adjustEValueBH(nfo$outputList$e_value)
-  nfo$outputList$e_bh_significant <- eBHSignificant(nfo$outputList$e_value, alpha = 0.005)
+  nfo$outputList$e_bh_significant <- eBHSignificant(nfo$outputList$e_value, alpha = 0.0005)
   return(nfo$outputList[, -4])
 }
