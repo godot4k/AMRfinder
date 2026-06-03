@@ -5,8 +5,10 @@ runs_env <- Sys.getenv("RUNS", unset = "1,2,3,4,5,6,7,8,9,10")
 runs <- as.integer(strsplit(runs_env, ",", fixed = TRUE)[[1]])
 evalue_cutoff <- as.numeric(Sys.getenv("EVALUE_CUTOFF", unset = "20"))
 score_column <- Sys.getenv("EVALUE_SCORE_COLUMN", unset = "e_adjust")
+e_bh_alpha <- as.numeric(Sys.getenv("E_BH_ALPHA", unset = "0.005"))
 cutoff_label <- gsub("[^0-9A-Za-z]+", "_", format(evalue_cutoff, trim = TRUE, scientific = FALSE))
 score_label <- gsub("[^0-9A-Za-z]+", "_", score_column)
+alpha_label <- gsub("[^0-9A-Za-z]+", "_", format(e_bh_alpha, trim = TRUE, scientific = FALSE))
 
 calc_evalue_for_region <- function(region_dat, y_group) {
   sample_mean <- colMeans(region_dat, na.rm = TRUE)
@@ -100,7 +102,7 @@ add_evalue <- function(pred, dat, y_group) {
     pred$e_adjust <- adjust_evalue_bh(pred$e_value)
   }
   if (!"e_bh_significant" %in% names(pred)) {
-    pred$e_bh_significant <- e_bh_significant(pred$e_value, alpha = 0.05)
+    pred$e_bh_significant <- e_bh_significant(pred$e_value, alpha = e_bh_alpha)
   }
 
   pred
@@ -127,9 +129,14 @@ evaluate_evalue <- function(run) {
   truth_file <- file.path(run_dir, "truth", "DMRs_unDMRs_signal.bed")
   result_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.tsv", run))
   evalue_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.evalue.tsv", run))
-  filtered_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.%s_gt_%s.tsv", run, score_label, cutoff_label))
-  coverage_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.%s_gt_%s.testR_truth_coverage.tsv", run, score_label, cutoff_label))
-  metrics_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.testR_metrics_%s_gt_%s.tsv", run, score_label, cutoff_label))
+  prefix <- if (score_column == "e_bh_significant") {
+    sprintf("%s_alpha_%s", score_label, alpha_label)
+  } else {
+    score_label
+  }
+  filtered_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.%s_gt_%s.tsv", run, prefix, cutoff_label))
+  coverage_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.%s_gt_%s.testR_truth_coverage.tsv", run, prefix, cutoff_label))
+  metrics_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.testR_metrics_%s_gt_%s.tsv", run, prefix, cutoff_label))
 
   if (!file.exists(result_file)) {
     stop("Missing no.cov result file for run ", run, ": ", result_file)
@@ -181,6 +188,7 @@ evaluate_evalue <- function(run) {
     method = paste0("dmr.no.cov.", score_column),
     cutoff = evalue_cutoff,
     score_column = score_column,
+    e_bh_alpha = e_bh_alpha,
     ACC = (tp + tn) / (tp + fn + fp + tn),
     FDR = ifelse((fp + tp) == 0, NA_real_, fp / (fp + tp)),
     Type_I_error = ifelse((fp + tn) == 0, NA_real_, fp / (fp + tn)),
@@ -205,7 +213,12 @@ evaluate_evalue <- function(run) {
 
 summary_dir <- file.path(input_root, "batch_results")
 dir.create(summary_dir, showWarnings = FALSE, recursive = TRUE)
-summary_file <- file.path(summary_dir, sprintf("run10_no_cov_%s_gt_%s_metrics_summary.tsv", score_label, cutoff_label))
+summary_prefix <- if (score_column == "e_bh_significant") {
+  sprintf("%s_alpha_%s", score_label, alpha_label)
+} else {
+  score_label
+}
+summary_file <- file.path(summary_dir, sprintf("run10_no_cov_%s_gt_%s_metrics_summary.tsv", summary_prefix, cutoff_label))
 
 all_metrics <- do.call(rbind, lapply(runs, evaluate_evalue))
 write.table(all_metrics, summary_file, sep = "\t", quote = FALSE, row.names = FALSE)
