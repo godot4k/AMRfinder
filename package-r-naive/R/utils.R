@@ -71,12 +71,22 @@ cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
   if (!all(y_group %in% c(0, 1))) {
     stop("For control/test mode, y must be coded as 0 for control and 1 for test.")
   }
+  sample_names <- colnames(aa)[-c(1, 2)]
+  if (length(sample_names) != length(y_group)) {
+    stop("The number of methylation sample columns must match the length of y.")
+  }
+  individual_id <- sub("^(control|test)", "", sample_names)
+  if (!all(grepl("^(control|test).+", sample_names)) ||
+      length(unique(individual_id)) == length(individual_id)) {
+    individual_id <- sample_names
+  }
+  individual_id <- factor(individual_id)
   x <- as.numeric(colMeans(aa[, -c(1, 2), drop = FALSE], na.rm = TRUE))
   y_val <- y_group
   if (!is.null(cov.mod)) {
-    lm.dat <- data.frame(y = y_val, x, cov.mod)
+    lm.dat <- data.frame(y = y_val, x, individual_id = individual_id, cov.mod)
   } else {
-    lm.dat <- data.frame(y = y_val, x)
+    lm.dat <- data.frame(y = y_val, x, individual_id = individual_id)
   }
   fit <- tryCatch(
     suppressWarnings(summary(glm(y ~ ., data = lm.dat, family = binomial()))),
