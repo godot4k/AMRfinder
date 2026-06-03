@@ -212,6 +212,27 @@ adjustEValueBH <- function(e_value) {
   e_adjust
 }
 
+eBHSignificant <- function(e_value, alpha = 0.05) {
+  significant <- integer(length(e_value))
+  valid_id <- which(is.finite(e_value) & e_value > 0)
+  if (length(valid_id) == 0) {
+    return(significant)
+  }
+
+  ordered_id <- valid_id[order(e_value[valid_id], decreasing = TRUE)]
+  e_sorted <- e_value[ordered_id]
+  k_sequence <- seq_along(e_sorted)
+  k_total <- length(e_value)
+  valid_k <- which((k_sequence * e_sorted / k_total) >= (1 / alpha))
+  if (length(valid_k) == 0) {
+    return(significant)
+  }
+
+  k_star <- max(valid_k)
+  significant[ordered_id[seq_len(k_star)]] <- 1L
+  significant
+}
+
 segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,KS,method){
   stacks<-NULL
   breaks<-NULL

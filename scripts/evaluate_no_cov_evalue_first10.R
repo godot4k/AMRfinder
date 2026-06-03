@@ -64,6 +64,27 @@ adjust_evalue_bh <- function(e_value) {
   e_adjust
 }
 
+e_bh_significant <- function(e_value, alpha = 0.05) {
+  significant <- integer(length(e_value))
+  valid_id <- which(is.finite(e_value) & e_value > 0)
+  if (length(valid_id) == 0) {
+    return(significant)
+  }
+
+  ordered_id <- valid_id[order(e_value[valid_id], decreasing = TRUE)]
+  e_sorted <- e_value[ordered_id]
+  k_sequence <- seq_along(e_sorted)
+  k_total <- length(e_value)
+  valid_k <- which((k_sequence * e_sorted / k_total) >= (1 / alpha))
+  if (length(valid_k) == 0) {
+    return(significant)
+  }
+
+  k_star <- max(valid_k)
+  significant[ordered_id[seq_len(k_star)]] <- 1L
+  significant
+}
+
 add_evalue <- function(pred, dat, y_group) {
   if (!"e_value" %in% names(pred)) {
     pred$e_value <- vapply(seq_len(nrow(pred)), function(i) {
@@ -77,6 +98,9 @@ add_evalue <- function(pred, dat, y_group) {
 
   if (!"e_adjust" %in% names(pred)) {
     pred$e_adjust <- adjust_evalue_bh(pred$e_value)
+  }
+  if (!"e_bh_significant" %in% names(pred)) {
+    pred$e_bh_significant <- e_bh_significant(pred$e_value, alpha = 0.05)
   }
 
   pred
