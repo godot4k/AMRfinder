@@ -159,6 +159,88 @@ calcSingleDiffSum<-function(intput_dat,y){
   return(S)
 }
 
+calcEValue <- function(intput_dat, y, a, b) {
+  y_group <- as.numeric(y[, 1])
+  if (!all(y_group %in% c(0, 1))) {
+    stop("For e-value calculation, y must be coded as 0 for control and 1 for test.")
+  }
+  if (b < a) return(1)
+  region_dat <- intput_dat[a:b, -c(1, 2), drop = FALSE]
+  if (nrow(region_dat) == 0) return(1)
+  if (ncol(region_dat) != length(y_group)) {
+    stop("The number of methylation sample columns must match the length of y.")
+  }
+  control_id <- which(y_group == 0)
+  test_id <- which(y_group == 1)
+  if (length(control_id) == 0 || length(test_id) == 0) {
+    stop("Both control (0) and test (1) samples are required for e-value calculation.")
+  }
+
+  density_log <- function(x, mu, sigma) {
+    vector_temp <- na.omit(as.numeric(x))
+    n <- length(vector_temp)
+    if (n == 0 || !is.finite(mu) || !is.finite(sigma) || sigma <= 0) {
+      return(NA_real_)
+    }
+    value <- mean(vector_temp)
+    if (!is.finite(value)) return(NA_real_)
+    d <- dnorm(x = value, mean = mu, sd = sigma / sqrt(n), log = TRUE)
+    if (!is.finite(d)) return(NA_real_)
+    d
+  }
+
+  control_values <- unlist(region_dat[, control_id, drop = FALSE])
+  test_values <- unlist(region_dat[, test_id, drop = FALSE])
+  all_values <- c(control_values, test_values)
+  mu_control <- mean(control_values, na.rm = TRUE)
+  sigma_control <- sd(control_values, na.rm = TRUE)
+  mu_test <- mean(test_values, na.rm = TRUE)
+  sigma_test <- sd(test_values, na.rm = TRUE)
+  mu_pooled <- mean(all_values, na.rm = TRUE)
+  sigma_pooled <- sd(all_values, na.rm = TRUE)
+
+  log_up_control <- apply(region_dat[, control_id, drop = FALSE], 2, density_log, mu = mu_control, sigma = sigma_control)
+  log_down_control <- apply(region_dat[, control_id, drop = FALSE], 2, density_log, mu = mu_pooled, sigma = sigma_pooled)
+  log_up_test <- apply(region_dat[, test_id, drop = FALSE], 2, density_log, mu = mu_test, sigma = sigma_test)
+  log_down_test <- apply(region_dat[, test_id, drop = FALSE], 2, density_log, mu = mu_pooled, sigma = sigma_pooled)
+
+  log_e_value <- sum(c(log_up_control, log_up_test), na.rm = TRUE) -
+    sum(c(log_down_control, log_down_test), na.rm = TRUE)
+  if (!is.finite(log_e_value) || log_e_value <= 0) return(1)
+  if (log_e_value >= log(.Machine$double.xmax)) return(Inf)
+  exp(log_e_value)
+}
+
+adjustEValueBH <- function(e_value) {
+  p_value <- rep(1, length(e_value))
+  finite_id <- is.finite(e_value) & e_value > 0
+  p_value[finite_id] <- 1 / e_value[finite_id]
+  p_value[is.infinite(e_value) & e_value > 0] <- 0
+  adjusted_p <- p.adjust(p_value, method = "BH")
+  e_adjust <- rep(1, length(adjusted_p))
+  zero_id <- adjusted_p == 0
+  positive_id <- adjusted_p > 0
+  e_adjust[zero_id] <- Inf
+  e_adjust[positive_id] <- 1 / adjusted_p[positive_id]
+  e_adjust[!is.finite(e_adjust) & !zero_id] <- 1
+  e_adjust
+}
+
+eBHSignificant <- function(e_value, alpha = 0.05) {
+  significant <- integer(length(e_value))
+  valid_id <- which(is.finite(e_value) & e_value > 0)
+  if (length(valid_id) == 0) return(significant)
+  ordered_id <- valid_id[order(e_value[valid_id], decreasing = TRUE)]
+  e_sorted <- e_value[ordered_id]
+  k_sequence <- seq_along(e_sorted)
+  k_total <- length(e_value)
+  valid_k <- which((k_sequence * e_sorted / k_total) >= (1 / alpha))
+  if (length(valid_k) == 0) return(significant)
+  k_star <- max(valid_k)
+  significant[ordered_id[seq_len(k_star)]] <- 1L
+  significant
+}
+
 segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,KS,method){
   stacks<-NULL
   breaks<-NULL
@@ -368,6 +450,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
             methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
             out$methX<-methX
             out$methY<-methY
+            out$e_value<-calcEValue(intput_dat,y,tmp_start,tmp_stop)
             outputList<-rbind(outputList,as.data.frame(out))
           }
           tmp<-NULL
@@ -377,6 +460,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
         methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
         out$methX<-methX
         out$methY<-methY
+        out$e_value<-calcEValue(intput_dat,y,b$start,b$stop)
         outputList<-rbind(outputList,as.data.frame(out))
       }
     }
@@ -395,6 +479,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
       methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
       out$methX<-methX
       out$methY<-methY
+      out$e_value<-calcEValue(intput_dat,y,tmp_start,tmp_stop)
       outputList<-rbind(outputList,as.data.frame(out))
     }
     tmp<-NULL

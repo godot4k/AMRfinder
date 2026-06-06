@@ -15,7 +15,8 @@
 }
 \value{
   A data frame with segmentation results including chr, start, end, #CpGs, correlation estimates,
-  coefficients, p-values, methX, methY, and FDR.
+  coefficients, p-values, methX, methY, metevalue-style e-value, FDR, BH-adjusted
+  e-value, and e-BH significance flag.
 }
 \examples{
   # Example usage (if test data were available):
