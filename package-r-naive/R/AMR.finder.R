@@ -47,7 +47,7 @@ AMRfinder <- function(intput_dat, y, cov.mod = NULL, controlist = list(
       }
     }
   }
-  colnames(nfo$outputList)[-4] <- c("chr", "start", "end", "N.CpGs", "cor_est", "coef_glm", "p_value", "methX", "methY", "e_value")
+  colnames(nfo$outputList)[-4] <- c("chr", "start", "end", "N.CpGs", "cor_est", "coef_meth", "p_value", "methX", "methY", "e_value")
   nfo$outputList$FDR <- p.adjust(nfo$outputList$p_value, method = "BH")
   nfo$outputList$e_adjust <- adjustEValueBH(nfo$outputList$e_value)
   nfo$outputList$e_bh_significant <- eBHSignificant(nfo$outputList$e_value, alpha = 0.0005)

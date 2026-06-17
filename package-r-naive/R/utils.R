@@ -69,6 +69,77 @@ is_contiguous <- function(x) {
   length(unique(rle_x$values)) == length(rle_x$values)
 }
 
+buildPhenotypeModelData <- function(meth, y, cov.mod = NULL, NR = 1) {
+  y_df <- as.data.frame(y)
+  phenotype <- as.numeric(y_df[, 1])
+  if (!all(phenotype %in% c(0, 1))) {
+    stop("For phenotype model mode, the first column of y must be coded as 0 and 1.")
+  }
+  if (length(meth) != length(phenotype) * NR) {
+    stop("The methylation summary length must equal nrow(y) * NR.")
+  }
+
+  adjustment <- NULL
+  if (ncol(y_df) > 1) {
+    adjustment <- y_df[, -1, drop = FALSE]
+  }
+  if (!is.null(cov.mod)) {
+    cov_df <- as.data.frame(cov.mod)
+    if (nrow(cov_df) != length(phenotype)) {
+      stop("cov.mod must have one row per sample.")
+    }
+    adjustment <- cbind(adjustment, cov_df)
+  }
+
+  model_dat <- data.frame(
+    phenotype = rep(phenotype, each = NR),
+    meth = meth
+  )
+  if (!is.null(adjustment) && ncol(adjustment) > 0) {
+    names(adjustment) <- make.unique(make.names(names(adjustment)))
+    keep <- vapply(adjustment, function(z) length(unique(z[!is.na(z)])) > 1, logical(1))
+    adjustment <- adjustment[, keep, drop = FALSE]
+    if (ncol(adjustment) > 0) {
+      model_dat <- cbind(model_dat, adjustment[rep(seq_len(nrow(adjustment)), each = NR), , drop = FALSE])
+    }
+  }
+  model_dat
+}
+
+fitPhenotypeMethModel <- function(meth, y, cov.mod = NULL, NR = 1) {
+  model_dat <- buildPhenotypeModelData(meth, y, cov.mod, NR)
+  model_dat <- model_dat[complete.cases(model_dat), , drop = FALSE]
+  if (nrow(model_dat) < 3 ||
+      length(unique(model_dat$phenotype)) < 2 ||
+      length(unique(model_dat$meth)) < 2) {
+    return(c(p_value = 1, coef_meth = 0, cor_est = 0))
+  }
+
+  rhs <- c("meth", setdiff(names(model_dat), c("phenotype", "meth")))
+  model_formula <- as.formula(paste("phenotype ~", paste(rhs, collapse = " + ")))
+  fit <- tryCatch(
+    suppressWarnings(glm(model_formula, data = model_dat, family = binomial())),
+    error = function(e) NULL
+  )
+
+  if (is.null(fit)) {
+    return(c(p_value = 1, coef_meth = 0, cor_est = 0))
+  }
+  coef_table <- tryCatch(summary(fit)$coef, error = function(e) NULL)
+  if (is.null(coef_table) || !"meth" %in% rownames(coef_table)) {
+    p_value <- 1
+    coef_meth <- 0
+  } else {
+    p_value <- coef_table["meth", 4]
+    coef_meth <- coef_table["meth", 1]
+    if (!is.finite(p_value)) p_value <- 1
+    if (!is.finite(coef_meth)) coef_meth <- 0
+  }
+  cor_est <- cor(model_dat$phenotype, model_dat$meth, use = "complete.obs", method = "pearson")
+  if (!is.finite(cor_est)) cor_est <- 0
+  c(p_value = p_value, coef_meth = coef_meth, cor_est = cor_est)
+}
+
 cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
   set.seed(123)
   aa <- intput_dat[a:b, ]
@@ -110,28 +181,8 @@ cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
     x <- as.numeric(colMeans(aa[, -c(1, 2)], na.rm = TRUE))
     NR <- 1
   }
-  y_val <- rep(y_group, each = NR)
-  if (!is.null(cov.mod)) {
-    lm.dat <- data.frame(meth = x, group = y_val, cov.mod[rep(seq_len(nrow(cov.mod)), each = NR), ])
-  } else {
-    lm.dat <- data.frame(meth = x, group = y_val)
-  }
-  fit <- tryCatch(
-    suppressWarnings(summary(lm(meth ~ ., data = lm.dat))),
-    error = function(e) NULL
-  )
-  if (is.null(fit) || nrow(fit$coef) < 2) {
-    p_value <- 1
-    coef_glm <- 0
-  } else {
-    p_value <- fit$coef[2, 4]
-    coef_glm <- fit$coef[2, 1]
-    if (!is.finite(p_value)) p_value <- 1
-    if (!is.finite(coef_glm)) coef_glm <- 0
-  }
-  cor_est <- cor(lm.dat$group, lm.dat$meth, use = "complete.obs", method = method)
-  if (!is.finite(cor_est)) cor_est <- 0
-  return(c(p_value, coef_glm, cor_est))
+  model_stat <- fitPhenotypeMethModel(x, y, cov.mod, NR)
+  return(c(model_stat["p_value"], model_stat["coef_meth"], model_stat["cor_est"]))
 }
 
 calcSingleDiffSum<-function(intput_dat,y){
@@ -290,7 +341,7 @@ segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,K
               child<-0
               ab[1]<--1
             }else{
-              bre<-list(chr=chr,start=n,stop=m,p_value=ks1[1],coef_glm=ks1[2],cor_est=ks1[3])
+              bre<-list(chr=chr,start=n,stop=m,p_value=ks1[1],coef_meth=ks1[2],cor_est=ks1[3])
               breaks<-rbind(breaks,data.frame(bre))
             }
           }
@@ -307,7 +358,7 @@ segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,K
               child<-0
               ab[1]<--1
             }else{
-              bre<-list(chr=chr,start=n,stop=m,p_value=ks2[1],coef_glm=ks2[2],cor_est=ks2[3])
+              bre<-list(chr=chr,start=n,stop=m,p_value=ks2[1],coef_meth=ks2[2],cor_est=ks2[3])
               breaks<-rbind(breaks,data.frame(bre))
             }
           }
@@ -324,14 +375,14 @@ segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,K
               child<-0
               ab[1]<--1
             }else{
-              bre<-list(chr=chr,start=n,stop=m,p_value=ks3[1],coef_glm=ks3[2],cor_est=ks3[3])
+              bre<-list(chr=chr,start=n,stop=m,p_value=ks3[1],coef_meth=ks3[2],cor_est=ks3[3])
               breaks<-rbind(breaks,data.frame(bre))
             }
           }
         }
       }else{
         if(child==0){
-          bre<-list(chr=chr,start=a,stop=b,p_value=KS[1],coef_glm=KS[2],cor_est=KS[3])
+          bre<-list(chr=chr,start=a,stop=b,p_value=KS[1],coef_meth=KS[2],cor_est=KS[3])
           breaks<-rbind(breaks,data.frame(bre))
         }
         a<--1
@@ -429,7 +480,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
         if(is.null(tmp)){
           tmp<-b
           methX <- mean(as.numeric(as.matrix(intput_dat[tmp$start:tmp$stop, -c(1, 2)])), na.rm = TRUE)
-          methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
+          methY <- mean(as.numeric(as.data.frame(y)[, 1]), na.rm = TRUE)
           tmp$methX<-methX
           tmp$methY<-methY
         }else{
@@ -445,9 +496,9 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
             ks<-cortest(intput_dat,y, method, cov.mod,tmp_start,tmp_stop)
           }
           if(ks[1]<2){
-            out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,cor_est = ks[3],coef_glm=ks[2],p_value=ks[1])
+            out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,cor_est = ks[3],coef_meth=ks[2],p_value=ks[1])
             methX <- mean(as.numeric(as.matrix(intput_dat[tmp_start:tmp_stop, -c(1, 2)])), na.rm = TRUE)
-            methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
+            methY <- mean(as.numeric(as.data.frame(y)[, 1]), na.rm = TRUE)
             out$methX<-methX
             out$methY<-methY
             out$e_value<-calcEValue(intput_dat,y,tmp_start,tmp_stop)
@@ -455,9 +506,9 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
           }
           tmp<-NULL
         }
-        out<-data.frame(chr=chr,start=intput_dat$pos[b$start]-1,stop=intput_dat$pos[b$stop],q=-1,length=b$stop-b$start+1,cor_est =b$cor_est,coef_glm=b$coef_glm,p_value=b$p_value)
+        out<-data.frame(chr=chr,start=intput_dat$pos[b$start]-1,stop=intput_dat$pos[b$stop],q=-1,length=b$stop-b$start+1,cor_est =b$cor_est,coef_meth=b$coef_meth,p_value=b$p_value)
         methX <- mean(as.numeric(as.matrix(intput_dat[b$start:b$stop, -c(1, 2)])), na.rm = TRUE)
-        methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
+        methY <- mean(as.numeric(as.data.frame(y)[, 1]), na.rm = TRUE)
         out$methX<-methX
         out$methY<-methY
         out$e_value<-calcEValue(intput_dat,y,b$start,b$stop)
@@ -474,9 +525,9 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
       ks<-cortest(intput_dat,y, method, cov.mod,tmp_start,tmp_stop)
     }
     if(ks[1]<2){
-      out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,cor_est = ks[3],coef_glm=ks[2],p_value=ks[1])
+      out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,cor_est = ks[3],coef_meth=ks[2],p_value=ks[1])
       methX <- mean(as.numeric(as.matrix(intput_dat[tmp_start:tmp_stop, -c(1, 2)])), na.rm = TRUE)
-      methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
+      methY <- mean(as.numeric(as.data.frame(y)[, 1]), na.rm = TRUE)
       out$methX<-methX
       out$methY<-methY
       out$e_value<-calcEValue(intput_dat,y,tmp_start,tmp_stop)
