@@ -178,68 +178,14 @@ fitPhenotypeMethModel <- function(meth, y, cov.mod = NULL, NR = 1, method = "pea
   }
 
   meth_coef <- extractMethCoefficient(fit)
-  cor_est <- cor(model_dat$phenotype, model_dat$meth, use = "complete.obs", method = method)
+  cor_dat <- data.frame(y = model_dat$phenotype, x = model_dat$meth)
+  cor_est <- cor(cor_dat$y, cor_dat$x, use = "complete.obs", method = method)
   if (!is.finite(cor_est)) cor_est <- 0
   p_value <- unname(meth_coef["p_value"])
   coef_meth <- unname(meth_coef["coef_meth"])
   if (!is.finite(p_value)) p_value <- 1
   if (!is.finite(coef_meth)) coef_meth <- 0
   c(p_value = p_value, coef_meth = coef_meth, cor_est = cor_est)
-}
-
-fitPhenotypeLikelihood <- function(meth, y, cov.mod = NULL) {
-  model_dat <- buildPhenotypeModelData(meth, y, cov.mod, NR = 1)
-  model_dat <- model_dat[complete.cases(model_dat), , drop = FALSE]
-  if (nrow(model_dat) < 3 ||
-      length(unique(model_dat$phenotype)) < 2 ||
-      length(unique(model_dat$meth)) < 2) {
-    return(c(full = NA_real_, reduced = NA_real_))
-  }
-
-  random_effect <- selectRandomEffect(model_dat)
-  adjustment_terms <- setdiff(names(model_dat), c("phenotype", "meth", random_effect))
-  full_rhs <- c("meth", adjustment_terms)
-  reduced_rhs <- adjustment_terms
-  full_fixed <- as.formula(paste("phenotype ~", paste(full_rhs, collapse = " + ")))
-  reduced_fixed <- if (length(reduced_rhs) > 0) {
-    as.formula(paste("phenotype ~", paste(reduced_rhs, collapse = " + ")))
-  } else {
-    phenotype ~ 1
-  }
-
-  full_fit <- NULL
-  reduced_fit <- NULL
-  if (!is.null(random_effect) && requireNamespace("lmerTest", quietly = TRUE)) {
-    model_dat[[random_effect]] <- factor(model_dat[[random_effect]])
-    full_mixed <- as.formula(
-      paste("phenotype ~", paste(full_rhs, collapse = " + "), "+ (1 |", random_effect, ")")
-    )
-    reduced_mixed <- if (length(reduced_rhs) > 0) {
-      as.formula(paste("phenotype ~", paste(reduced_rhs, collapse = " + "), "+ (1 |", random_effect, ")"))
-    } else {
-      as.formula(paste("phenotype ~ 1 + (1 |", random_effect, ")"))
-    }
-    full_fit <- tryCatch(
-      suppressWarnings(lmerTest::lmer(full_mixed, data = model_dat, REML = FALSE)),
-      error = function(e) NULL
-    )
-    reduced_fit <- tryCatch(
-      suppressWarnings(lmerTest::lmer(reduced_mixed, data = model_dat, REML = FALSE)),
-      error = function(e) NULL
-    )
-  }
-
-  if (is.null(full_fit) || is.null(reduced_fit)) {
-    full_fit <- tryCatch(suppressWarnings(lm(full_fixed, data = model_dat)), error = function(e) NULL)
-    reduced_fit <- tryCatch(suppressWarnings(lm(reduced_fixed, data = model_dat)), error = function(e) NULL)
-  }
-  if (is.null(full_fit) || is.null(reduced_fit)) {
-    return(c(full = NA_real_, reduced = NA_real_))
-  }
-  c(
-    full = as.numeric(logLik(full_fit)),
-    reduced = as.numeric(logLik(reduced_fit))
-  )
 }
 
 cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
@@ -289,106 +235,19 @@ calcSingleDiffSum<-function(intput_dat,y){
   if (!all(is.finite(phenotype)) || length(unique(phenotype)) < 2) {
     stop("The first column of y must be a numeric phenotype with at least two values.")
   }
-  calcAssoc<-function(x){
+  calcCR<-function(x){
     x<-as.numeric(x)
-    res <- suppressWarnings(cor(x, phenotype, use = "complete.obs", method = "pearson"))
-    if(is.na(res) || !is.finite(res)) res <- 0
+    res <- cor(x, phenotype, method = "pearson", use = "complete.obs")
+    if(is.na(res)) res <- 0
     return(res)
   }
-  association_score<-apply(intput_dat[,-c(1,2)],1,calcAssoc)
-  smean<-cumsum(as.numeric(association_score))
+  correlation<-apply(intput_dat[,-c(1,2)],1,calcCR)
+  smean<-cumsum(as.numeric(correlation))
   absmean<-abs(smean)
-  sigm<-sign(association_score)
+  sigm<-sign(correlation)
   sigsum<-cumsum(sigm)
   S<-cbind(absmean,smean,sigsum)
   return(S)
-}
-
-calcEValue <- function(intput_dat, y, cov.mod = NULL, a, b) {
-  if (b < a) return(1)
-  region_dat <- intput_dat[a:b, -c(1, 2), drop = FALSE]
-  if (nrow(region_dat) == 0) return(1)
-  y_group <- as.numeric(as.data.frame(y)[, 1])
-  if (!all(y_group %in% c(0, 1))) {
-    meth <- as.numeric(colMeans(region_dat, na.rm = TRUE))
-    likelihood <- fitPhenotypeLikelihood(meth, y, cov.mod)
-    log_e_value <- likelihood["full"] - likelihood["reduced"]
-    if (!is.finite(log_e_value) || log_e_value <= 0) return(1)
-    if (log_e_value >= log(.Machine$double.xmax)) return(Inf)
-    return(exp(log_e_value))
-  }
-  if (ncol(region_dat) != length(y_group)) {
-    stop("The number of methylation sample columns must match the length of y.")
-  }
-  control_id <- which(y_group == 0)
-  test_id <- which(y_group == 1)
-  if (length(control_id) == 0 || length(test_id) == 0) {
-    stop("Both control (0) and test (1) samples are required for e-value calculation.")
-  }
-
-  density_log <- function(x, mu, sigma) {
-    vector_temp <- na.omit(as.numeric(x))
-    n <- length(vector_temp)
-    if (n == 0 || !is.finite(mu) || !is.finite(sigma) || sigma <= 0) {
-      return(NA_real_)
-    }
-    value <- mean(vector_temp)
-    if (!is.finite(value)) return(NA_real_)
-    d <- dnorm(x = value, mean = mu, sd = sigma / sqrt(n), log = TRUE)
-    if (!is.finite(d)) return(NA_real_)
-    d
-  }
-
-  control_values <- unlist(region_dat[, control_id, drop = FALSE])
-  test_values <- unlist(region_dat[, test_id, drop = FALSE])
-  all_values <- c(control_values, test_values)
-  mu_control <- mean(control_values, na.rm = TRUE)
-  sigma_control <- sd(control_values, na.rm = TRUE)
-  mu_test <- mean(test_values, na.rm = TRUE)
-  sigma_test <- sd(test_values, na.rm = TRUE)
-  mu_pooled <- mean(all_values, na.rm = TRUE)
-  sigma_pooled <- sd(all_values, na.rm = TRUE)
-
-  log_up_control <- apply(region_dat[, control_id, drop = FALSE], 2, density_log, mu = mu_control, sigma = sigma_control)
-  log_down_control <- apply(region_dat[, control_id, drop = FALSE], 2, density_log, mu = mu_pooled, sigma = sigma_pooled)
-  log_up_test <- apply(region_dat[, test_id, drop = FALSE], 2, density_log, mu = mu_test, sigma = sigma_test)
-  log_down_test <- apply(region_dat[, test_id, drop = FALSE], 2, density_log, mu = mu_pooled, sigma = sigma_pooled)
-
-  log_e_value <- sum(c(log_up_control, log_up_test), na.rm = TRUE) -
-    sum(c(log_down_control, log_down_test), na.rm = TRUE)
-  if (!is.finite(log_e_value) || log_e_value <= 0) return(1)
-  if (log_e_value >= log(.Machine$double.xmax)) return(Inf)
-  exp(log_e_value)
-}
-
-adjustEValueBH <- function(e_value) {
-  p_value <- rep(1, length(e_value))
-  finite_id <- is.finite(e_value) & e_value > 0
-  p_value[finite_id] <- 1 / e_value[finite_id]
-  p_value[is.infinite(e_value) & e_value > 0] <- 0
-  adjusted_p <- p.adjust(p_value, method = "BH")
-  e_adjust <- rep(1, length(adjusted_p))
-  zero_id <- adjusted_p == 0
-  positive_id <- adjusted_p > 0
-  e_adjust[zero_id] <- Inf
-  e_adjust[positive_id] <- 1 / adjusted_p[positive_id]
-  e_adjust[!is.finite(e_adjust) & !zero_id] <- 1
-  e_adjust
-}
-
-eBHSignificant <- function(e_value, alpha = 0.05) {
-  significant <- integer(length(e_value))
-  valid_id <- which(is.finite(e_value) & e_value > 0)
-  if (length(valid_id) == 0) return(significant)
-  ordered_id <- valid_id[order(e_value[valid_id], decreasing = TRUE)]
-  e_sorted <- e_value[ordered_id]
-  k_sequence <- seq_along(e_sorted)
-  k_total <- length(e_value)
-  valid_k <- which((k_sequence * e_sorted / k_total) >= (1 / alpha))
-  if (length(valid_k) == 0) return(significant)
-  k_star <- max(valid_k)
-  significant[ordered_id[seq_len(k_star)]] <- 1L
-  significant
 }
 
 segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,KS,method){
@@ -601,7 +460,6 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
             methY <- mean(as.numeric(as.data.frame(y)[, 1]), na.rm = TRUE)
             out$methX<-methX
             out$methY<-methY
-            out$e_value<-calcEValue(intput_dat,y,cov.mod,tmp_start,tmp_stop)
             outputList<-rbind(outputList,as.data.frame(out))
           }
           tmp<-NULL
@@ -611,7 +469,6 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
         methY <- mean(as.numeric(as.data.frame(y)[, 1]), na.rm = TRUE)
         out$methX<-methX
         out$methY<-methY
-        out$e_value<-calcEValue(intput_dat,y,cov.mod,b$start,b$stop)
         outputList<-rbind(outputList,as.data.frame(out))
       }
     }
@@ -630,7 +487,6 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
       methY <- mean(as.numeric(as.data.frame(y)[, 1]), na.rm = TRUE)
       out$methX<-methX
       out$methY<-methY
-      out$e_value<-calcEValue(intput_dat,y,cov.mod,tmp_start,tmp_stop)
       outputList<-rbind(outputList,as.data.frame(out))
     }
     tmp<-NULL

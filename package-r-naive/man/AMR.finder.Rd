@@ -20,8 +20,7 @@
 \value{
   A data frame with segmentation results including chr, start, end, #CpGs, correlation estimates,
   methylation coefficients from phenotype ~ methylation + adjustments, p-values, methX,
-  methY, likelihood-ratio e-value for continuous phenotype, FDR, BH-adjusted
-  e-value, and e-BH significance flag.
+  methY, and FDR.
 }
 \examples{
   # Example usage (if test data were available):
