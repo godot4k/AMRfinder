@@ -72,8 +72,8 @@ is_contiguous <- function(x) {
 buildPhenotypeModelData <- function(meth, y, cov.mod = NULL, NR = 1) {
   y_df <- as.data.frame(y)
   phenotype <- as.numeric(y_df[, 1])
-  if (!all(phenotype %in% c(0, 1))) {
-    stop("For phenotype model mode, the first column of y must be coded as 0 and 1.")
+  if (!all(is.finite(phenotype))) {
+    stop("For phenotype model mode, the first column of y must be a numeric phenotype.")
   }
   if (length(meth) != length(phenotype) * NR) {
     stop("The methylation summary length must equal nrow(y) * NR.")
@@ -103,10 +103,45 @@ buildPhenotypeModelData <- function(meth, y, cov.mod = NULL, NR = 1) {
       model_dat <- cbind(model_dat, adjustment[rep(seq_len(nrow(adjustment)), each = NR), , drop = FALSE])
     }
   }
+  char_id <- vapply(model_dat, is.character, logical(1))
+  model_dat[char_id] <- lapply(model_dat[char_id], factor)
   model_dat
 }
 
-fitPhenotypeMethModel <- function(meth, y, cov.mod = NULL, NR = 1) {
+selectRandomEffect <- function(model_dat) {
+  candidates <- c(
+    "subject", "subject_id", "Subject", "SubjectID", "subject.ID",
+    "id", "ID", "patient", "patient_id", "individual", "individual_id"
+  )
+  candidates <- make.names(candidates)
+  candidates <- candidates[candidates %in% names(model_dat)]
+  for (candidate in candidates) {
+    value <- model_dat[[candidate]]
+    n_level <- length(unique(value[!is.na(value)]))
+    if (n_level >= 2 && any(table(value) > 1)) {
+      return(candidate)
+    }
+  }
+  NULL
+}
+
+extractMethCoefficient <- function(fit) {
+  coef_table <- tryCatch(summary(fit)$coef, error = function(e) NULL)
+  if (is.null(coef_table) || !"meth" %in% rownames(coef_table)) {
+    return(c(p_value = 1, coef_meth = 0))
+  }
+  p_col <- grep("^Pr\\(", colnames(coef_table), value = TRUE)
+  if (length(p_col) == 0) {
+    return(c(p_value = 1, coef_meth = unname(coef_table["meth", 1])))
+  }
+  p_value <- unname(coef_table["meth", p_col[1]])
+  coef_meth <- unname(coef_table["meth", 1])
+  if (!is.finite(p_value)) p_value <- 1
+  if (!is.finite(coef_meth)) coef_meth <- 0
+  c(p_value = p_value, coef_meth = coef_meth)
+}
+
+fitPhenotypeMethModel <- function(meth, y, cov.mod = NULL, NR = 1, method = "pearson") {
   model_dat <- buildPhenotypeModelData(meth, y, cov.mod, NR)
   model_dat <- model_dat[complete.cases(model_dat), , drop = FALSE]
   if (nrow(model_dat) < 3 ||
@@ -115,38 +150,101 @@ fitPhenotypeMethModel <- function(meth, y, cov.mod = NULL, NR = 1) {
     return(c(p_value = 1, coef_meth = 0, cor_est = 0))
   }
 
-  rhs <- c("meth", setdiff(names(model_dat), c("phenotype", "meth")))
-  model_formula <- as.formula(paste("phenotype ~", paste(rhs, collapse = " + ")))
-  fit <- tryCatch(
-    suppressWarnings(glm(model_formula, data = model_dat, family = binomial())),
-    error = function(e) NULL
-  )
+  random_effect <- selectRandomEffect(model_dat)
+  fixed_terms <- setdiff(names(model_dat), c("phenotype", "meth", random_effect))
+  rhs <- c("meth", fixed_terms)
+  fixed_formula <- as.formula(paste("phenotype ~", paste(rhs, collapse = " + ")))
 
+  fit <- NULL
+  if (!is.null(random_effect) && requireNamespace("lmerTest", quietly = TRUE)) {
+    mixed_formula <- as.formula(
+      paste("phenotype ~", paste(rhs, collapse = " + "), "+ (1 |", random_effect, ")")
+    )
+    model_dat[[random_effect]] <- factor(model_dat[[random_effect]])
+    fit <- tryCatch(
+      suppressWarnings(lmerTest::lmer(mixed_formula, data = model_dat, REML = FALSE)),
+      error = function(e) NULL
+    )
+  }
+
+  if (is.null(fit)) {
+    fit <- tryCatch(
+      suppressWarnings(lm(fixed_formula, data = model_dat)),
+      error = function(e) NULL
+    )
+  }
   if (is.null(fit)) {
     return(c(p_value = 1, coef_meth = 0, cor_est = 0))
   }
-  coef_table <- tryCatch(summary(fit)$coef, error = function(e) NULL)
-  if (is.null(coef_table) || !"meth" %in% rownames(coef_table)) {
-    p_value <- 1
-    coef_meth <- 0
-  } else {
-    p_value <- coef_table["meth", 4]
-    coef_meth <- coef_table["meth", 1]
-    if (!is.finite(p_value)) p_value <- 1
-    if (!is.finite(coef_meth)) coef_meth <- 0
-  }
-  cor_est <- cor(model_dat$phenotype, model_dat$meth, use = "complete.obs", method = "pearson")
+
+  meth_coef <- extractMethCoefficient(fit)
+  cor_est <- cor(model_dat$phenotype, model_dat$meth, use = "complete.obs", method = method)
   if (!is.finite(cor_est)) cor_est <- 0
+  p_value <- unname(meth_coef["p_value"])
+  coef_meth <- unname(meth_coef["coef_meth"])
+  if (!is.finite(p_value)) p_value <- 1
+  if (!is.finite(coef_meth)) coef_meth <- 0
   c(p_value = p_value, coef_meth = coef_meth, cor_est = cor_est)
+}
+
+fitPhenotypeLikelihood <- function(meth, y, cov.mod = NULL) {
+  model_dat <- buildPhenotypeModelData(meth, y, cov.mod, NR = 1)
+  model_dat <- model_dat[complete.cases(model_dat), , drop = FALSE]
+  if (nrow(model_dat) < 3 ||
+      length(unique(model_dat$phenotype)) < 2 ||
+      length(unique(model_dat$meth)) < 2) {
+    return(c(full = NA_real_, reduced = NA_real_))
+  }
+
+  random_effect <- selectRandomEffect(model_dat)
+  adjustment_terms <- setdiff(names(model_dat), c("phenotype", "meth", random_effect))
+  full_rhs <- c("meth", adjustment_terms)
+  reduced_rhs <- adjustment_terms
+  full_fixed <- as.formula(paste("phenotype ~", paste(full_rhs, collapse = " + ")))
+  reduced_fixed <- if (length(reduced_rhs) > 0) {
+    as.formula(paste("phenotype ~", paste(reduced_rhs, collapse = " + ")))
+  } else {
+    phenotype ~ 1
+  }
+
+  full_fit <- NULL
+  reduced_fit <- NULL
+  if (!is.null(random_effect) && requireNamespace("lmerTest", quietly = TRUE)) {
+    model_dat[[random_effect]] <- factor(model_dat[[random_effect]])
+    full_mixed <- as.formula(
+      paste("phenotype ~", paste(full_rhs, collapse = " + "), "+ (1 |", random_effect, ")")
+    )
+    reduced_mixed <- if (length(reduced_rhs) > 0) {
+      as.formula(paste("phenotype ~", paste(reduced_rhs, collapse = " + "), "+ (1 |", random_effect, ")"))
+    } else {
+      as.formula(paste("phenotype ~ 1 + (1 |", random_effect, ")"))
+    }
+    full_fit <- tryCatch(
+      suppressWarnings(lmerTest::lmer(full_mixed, data = model_dat, REML = FALSE)),
+      error = function(e) NULL
+    )
+    reduced_fit <- tryCatch(
+      suppressWarnings(lmerTest::lmer(reduced_mixed, data = model_dat, REML = FALSE)),
+      error = function(e) NULL
+    )
+  }
+
+  if (is.null(full_fit) || is.null(reduced_fit)) {
+    full_fit <- tryCatch(suppressWarnings(lm(full_fixed, data = model_dat)), error = function(e) NULL)
+    reduced_fit <- tryCatch(suppressWarnings(lm(reduced_fixed, data = model_dat)), error = function(e) NULL)
+  }
+  if (is.null(full_fit) || is.null(reduced_fit)) {
+    return(c(full = NA_real_, reduced = NA_real_))
+  }
+  c(
+    full = as.numeric(logLik(full_fit)),
+    reduced = as.numeric(logLik(reduced_fit))
+  )
 }
 
 cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
   set.seed(123)
   aa <- intput_dat[a:b, ]
-  y_group <- as.numeric(y[, 1])
-  if (!all(y_group %in% c(0, 1))) {
-    stop("For control/test mode, y must be coded as 0 for control and 1 for test.")
-  }
   if (nrow(aa) <= 1) {
     op.num <- 1
   } else {
@@ -181,43 +279,44 @@ cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
     x <- as.numeric(colMeans(aa[, -c(1, 2)], na.rm = TRUE))
     NR <- 1
   }
-  model_stat <- fitPhenotypeMethModel(x, y, cov.mod, NR)
-  return(c(model_stat["p_value"], model_stat["coef_meth"], model_stat["cor_est"]))
+  model_stat <- fitPhenotypeMethModel(x, y, cov.mod, NR, method)
+  model_stat[!is.finite(model_stat)] <- c(p_value = 1, coef_meth = 0, cor_est = 0)[!is.finite(model_stat)]
+  return(c(unname(model_stat["p_value"]), unname(model_stat["coef_meth"]), unname(model_stat["cor_est"])))
 }
 
 calcSingleDiffSum<-function(intput_dat,y){
-  y_group <- as.numeric(y[, 1])
-  if (!all(y_group %in% c(0, 1))) {
-    stop("For control/test mode, y must be coded as 0 for control and 1 for test.")
+  phenotype <- as.numeric(as.data.frame(y)[, 1])
+  if (!all(is.finite(phenotype)) || length(unique(phenotype)) < 2) {
+    stop("The first column of y must be a numeric phenotype with at least two values.")
   }
-  control_id <- which(y_group == 0)
-  test_id <- which(y_group == 1)
-  if (length(control_id) == 0 || length(test_id) == 0) {
-    stop("Both control (0) and test (1) samples are required.")
-  }
-  calcDiff<-function(x){
+  calcAssoc<-function(x){
     x<-as.numeric(x)
-    res <- mean(x[test_id], na.rm = TRUE) - mean(x[control_id], na.rm = TRUE)
-    if(is.na(res)) res <- 0
+    res <- suppressWarnings(cor(x, phenotype, use = "complete.obs", method = "pearson"))
+    if(is.na(res) || !is.finite(res)) res <- 0
     return(res)
   }
-  mean_difference<-apply(intput_dat[,-c(1,2)],1,calcDiff)
-  smean<-cumsum(as.numeric(mean_difference))
+  association_score<-apply(intput_dat[,-c(1,2)],1,calcAssoc)
+  smean<-cumsum(as.numeric(association_score))
   absmean<-abs(smean)
-  sigm<-sign(mean_difference)
+  sigm<-sign(association_score)
   sigsum<-cumsum(sigm)
   S<-cbind(absmean,smean,sigsum)
   return(S)
 }
 
-calcEValue <- function(intput_dat, y, a, b) {
-  y_group <- as.numeric(y[, 1])
-  if (!all(y_group %in% c(0, 1))) {
-    stop("For e-value calculation, y must be coded as 0 for control and 1 for test.")
-  }
+calcEValue <- function(intput_dat, y, cov.mod = NULL, a, b) {
   if (b < a) return(1)
   region_dat <- intput_dat[a:b, -c(1, 2), drop = FALSE]
   if (nrow(region_dat) == 0) return(1)
+  y_group <- as.numeric(as.data.frame(y)[, 1])
+  if (!all(y_group %in% c(0, 1))) {
+    meth <- as.numeric(colMeans(region_dat, na.rm = TRUE))
+    likelihood <- fitPhenotypeLikelihood(meth, y, cov.mod)
+    log_e_value <- likelihood["full"] - likelihood["reduced"]
+    if (!is.finite(log_e_value) || log_e_value <= 0) return(1)
+    if (log_e_value >= log(.Machine$double.xmax)) return(Inf)
+    return(exp(log_e_value))
+  }
   if (ncol(region_dat) != length(y_group)) {
     stop("The number of methylation sample columns must match the length of y.")
   }
@@ -325,7 +424,8 @@ segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,K
           ks3<-cortest(intput_dat,y,method, cov.mod,n,m)
         }
       }
-      newp<-min(ks1[1],ks2[1],ks3[1])
+      newp<-min(ks1[1],ks2[1],ks3[1], na.rm = TRUE)
+      if(!is.finite(newp)) newp <- 2
       if((newp<KS[1]||(newp>1&&KS[1]>1))&&(b-a>=mincpgs)){
         stack<-list(a=a,b=b,ab=ab,child=child+1,ks1=ks1,ks2=ks2,ks3=ks3,KS=KS)
         stacks<-append(stacks,list(stack))
@@ -501,7 +601,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
             methY <- mean(as.numeric(as.data.frame(y)[, 1]), na.rm = TRUE)
             out$methX<-methX
             out$methY<-methY
-            out$e_value<-calcEValue(intput_dat,y,tmp_start,tmp_stop)
+            out$e_value<-calcEValue(intput_dat,y,cov.mod,tmp_start,tmp_stop)
             outputList<-rbind(outputList,as.data.frame(out))
           }
           tmp<-NULL
@@ -511,7 +611,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
         methY <- mean(as.numeric(as.data.frame(y)[, 1]), na.rm = TRUE)
         out$methX<-methX
         out$methY<-methY
-        out$e_value<-calcEValue(intput_dat,y,b$start,b$stop)
+        out$e_value<-calcEValue(intput_dat,y,cov.mod,b$start,b$stop)
         outputList<-rbind(outputList,as.data.frame(out))
       }
     }
@@ -530,7 +630,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
       methY <- mean(as.numeric(as.data.frame(y)[, 1]), na.rm = TRUE)
       out$methX<-methX
       out$methY<-methY
-      out$e_value<-calcEValue(intput_dat,y,tmp_start,tmp_stop)
+      out$e_value<-calcEValue(intput_dat,y,cov.mod,tmp_start,tmp_stop)
       outputList<-rbind(outputList,as.data.frame(out))
     }
     tmp<-NULL
