@@ -5,10 +5,8 @@ runs_env <- Sys.getenv("RUNS", unset = "1,2,3,4,5,6,7,8,9,10")
 runs <- as.integer(strsplit(runs_env, ",", fixed = TRUE)[[1]])
 evalue_cutoff <- as.numeric(Sys.getenv("EVALUE_CUTOFF", unset = "20"))
 score_column <- Sys.getenv("EVALUE_SCORE_COLUMN", unset = "e_adjust")
-e_bh_alpha <- as.numeric(Sys.getenv("E_BH_ALPHA", unset = "0.0005"))
 cutoff_label <- gsub("[^0-9A-Za-z]+", "_", format(evalue_cutoff, trim = TRUE, scientific = FALSE))
 score_label <- gsub("[^0-9A-Za-z]+", "_", score_column)
-alpha_label <- gsub("[^0-9A-Za-z]+", "_", format(e_bh_alpha, trim = TRUE, scientific = FALSE))
 
 calc_evalue_for_region <- function(region_dat, y_group) {
   sample_mean <- colMeans(region_dat, na.rm = TRUE)
@@ -66,27 +64,6 @@ adjust_evalue_bh <- function(e_value) {
   e_adjust
 }
 
-e_bh_significant <- function(e_value, alpha = 0.05) {
-  significant <- integer(length(e_value))
-  valid_id <- which(is.finite(e_value) & e_value > 0)
-  if (length(valid_id) == 0) {
-    return(significant)
-  }
-
-  ordered_id <- valid_id[order(e_value[valid_id], decreasing = TRUE)]
-  e_sorted <- e_value[ordered_id]
-  k_sequence <- seq_along(e_sorted)
-  k_total <- length(e_value)
-  valid_k <- which((k_sequence * e_sorted / k_total) >= (1 / alpha))
-  if (length(valid_k) == 0) {
-    return(significant)
-  }
-
-  k_star <- max(valid_k)
-  significant[ordered_id[seq_len(k_star)]] <- 1L
-  significant
-}
-
 add_evalue <- function(pred, dat, y_group) {
   if (!"e_value" %in% names(pred)) {
     pred$e_value <- vapply(seq_len(nrow(pred)), function(i) {
@@ -100,9 +77,6 @@ add_evalue <- function(pred, dat, y_group) {
 
   if (!"e_adjust" %in% names(pred)) {
     pred$e_adjust <- adjust_evalue_bh(pred$e_value)
-  }
-  if (!"e_bh_significant" %in% names(pred)) {
-    pred$e_bh_significant <- e_bh_significant(pred$e_value, alpha = e_bh_alpha)
   }
 
   pred
@@ -129,11 +103,7 @@ evaluate_evalue <- function(run) {
   truth_file <- file.path(run_dir, "truth", "DMRs_unDMRs_signal.bed")
   result_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.tsv", run))
   evalue_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.evalue.tsv", run))
-  prefix <- if (score_column == "e_bh_significant") {
-    sprintf("%s_alpha_%s", score_label, alpha_label)
-  } else {
-    score_label
-  }
+  prefix <- score_label
   filtered_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.%s_gt_%s.tsv", run, prefix, cutoff_label))
   coverage_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.%s_gt_%s.testR_truth_coverage.tsv", run, prefix, cutoff_label))
   metrics_file <- file.path(results_dir, sprintf("run%d_dmr.no.cov.testR_metrics_%s_gt_%s.tsv", run, prefix, cutoff_label))
@@ -188,7 +158,6 @@ evaluate_evalue <- function(run) {
     method = paste0("dmr.no.cov.", score_column),
     cutoff = evalue_cutoff,
     score_column = score_column,
-    e_bh_alpha = e_bh_alpha,
     ACC = (tp + tn) / (tp + fn + fp + tn),
     FDR = ifelse((fp + tp) == 0, NA_real_, fp / (fp + tp)),
     Type_I_error = ifelse((fp + tn) == 0, NA_real_, fp / (fp + tn)),
@@ -213,11 +182,7 @@ evaluate_evalue <- function(run) {
 
 summary_dir <- file.path(input_root, "batch_results")
 dir.create(summary_dir, showWarnings = FALSE, recursive = TRUE)
-summary_prefix <- if (score_column == "e_bh_significant") {
-  sprintf("%s_alpha_%s", score_label, alpha_label)
-} else {
-  score_label
-}
+summary_prefix <- score_label
 summary_file <- file.path(summary_dir, sprintf("run10_no_cov_%s_gt_%s_metrics_summary.tsv", summary_prefix, cutoff_label))
 
 all_metrics <- do.call(rbind, lapply(runs, evaluate_evalue))

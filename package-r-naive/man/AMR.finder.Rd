@@ -15,10 +15,10 @@
 }
 \value{
   A data frame with segmentation results including chr, start, end, N.CpGs,
-  ks_stat, mean_diff, p_value, methX, methY, e_value, FDR, e_adjust,
-  and e_bh_significant. The e_value column uses the metevalue-style
-  group-specific versus pooled normal density ratio. The e_adjust column is
-  calculated as 1 / p.adjust(1 / e_value, method = "BH").
+  ks_stat, mean_diff, p_value, methX, methY, e_value, FDR, and e_adjust.
+  The e_value column uses the metevalue-style group-specific versus pooled
+  normal density ratio. The e_adjust column is calculated as
+  1 / p.adjust(1 / e_value, method = "BH").
 }
 \examples{
   # Example usage (if test data were available):
