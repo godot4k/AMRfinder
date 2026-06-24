@@ -176,6 +176,38 @@ metilene_ks2d <- function(control_values, control_pos, test_values, test_pos) {
   c(p_value = p_value, statistic = d_stat)
 }
 
+paired_wilcox_region_p <- function(methylation, y, y_group) {
+  if (!is.data.frame(y) || !"pair_id" %in% names(y)) return(NULL)
+  pair_id <- as.character(y$pair_id)
+  if (length(pair_id) != length(y_group)) {
+    stop("pair_id must have the same length as the group vector in y.")
+  }
+  if (any(is.na(pair_id) | pair_id == "")) {
+    stop("pair_id must be non-missing for paired Wilcoxon testing.")
+  }
+
+  sample_mean <- colMeans(methylation, na.rm = TRUE)
+  pre_values <- numeric(0)
+  post_values <- numeric(0)
+  for (id in unique(pair_id)) {
+    pre_idx <- which(pair_id == id & y_group == 0)
+    post_idx <- which(pair_id == id & y_group == 1)
+    if (length(pre_idx) != 1 || length(post_idx) != 1) {
+      stop("Each pair_id must have exactly one group 0 sample and one group 1 sample.")
+    }
+    pre_value <- sample_mean[pre_idx]
+    post_value <- sample_mean[post_idx]
+    if (is.finite(pre_value) && is.finite(post_value)) {
+      pre_values <- c(pre_values, pre_value)
+      post_values <- c(post_values, post_value)
+    }
+  }
+  if (length(pre_values) < 2) return(1)
+  p_value <- suppressWarnings(wilcox.test(pre_values, post_values, paired = TRUE, exact = FALSE)$p.value)
+  if (!is.finite(p_value)) p_value <- 1
+  p_value
+}
+
 cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
   aa <- intput_dat[a:b, ]
   y_group <- as.numeric(y[, 1])
@@ -212,7 +244,10 @@ cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
   if (!is.finite(ks2d_p)) ks2d_p <- 1
   ks2d_stat <- as.numeric(ks2d[["statistic"]])
   if (!is.finite(ks2d_stat)) ks2d_stat <- 0
-  mwu_p <- suppressWarnings(wilcox.test(control_values, test_values, exact = FALSE)$p.value)
+  mwu_p <- paired_wilcox_region_p(methylation, y, y_group)
+  if (is.null(mwu_p)) {
+    mwu_p <- suppressWarnings(wilcox.test(control_values, test_values, exact = FALSE)$p.value)
+  }
   if (!is.finite(mwu_p)) mwu_p <- 1
   mean_diff <- mean(test_values, na.rm = TRUE) - mean(control_values, na.rm = TRUE)
   if (!is.finite(mean_diff)) mean_diff <- 0
@@ -500,7 +535,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
         if(is.null(tmp)){
           tmp<-b
           methX <- mean(as.numeric(as.matrix(intput_dat[tmp$start:tmp$stop, -c(1, 2)])), na.rm = TRUE)
-          methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
+          methY <- mean(as.numeric(y[, 1]), na.rm = TRUE)
           tmp$methX<-methX
           tmp$methY<-methY
         }else{
@@ -518,7 +553,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
           if(ks[1]<2){
             out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,ks_stat = ks[3],mean_diff=ks[2],p_value=ks[4])
             methX <- mean(as.numeric(as.matrix(intput_dat[tmp_start:tmp_stop, -c(1, 2)])), na.rm = TRUE)
-            methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
+            methY <- mean(as.numeric(y[, 1]), na.rm = TRUE)
             out$methX<-methX
             out$methY<-methY
             out$e_value<-calcEValue(intput_dat,y,tmp_start,tmp_stop)
@@ -528,7 +563,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
         }
         out<-data.frame(chr=chr,start=intput_dat$pos[b$start]-1,stop=intput_dat$pos[b$stop],q=-1,length=b$stop-b$start+1,ks_stat =b$ks_stat,mean_diff=b$mean_diff,p_value=b$p_value)
         methX <- mean(as.numeric(as.matrix(intput_dat[b$start:b$stop, -c(1, 2)])), na.rm = TRUE)
-        methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
+        methY <- mean(as.numeric(y[, 1]), na.rm = TRUE)
         out$methX<-methX
         out$methY<-methY
         out$e_value<-calcEValue(intput_dat,y,b$start,b$stop)
@@ -547,7 +582,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
     if(ks[1]<2){
       out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,ks_stat = ks[3],mean_diff=ks[2],p_value=ks[4])
       methX <- mean(as.numeric(as.matrix(intput_dat[tmp_start:tmp_stop, -c(1, 2)])), na.rm = TRUE)
-      methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
+      methY <- mean(as.numeric(y[, 1]), na.rm = TRUE)
       out$methX<-methX
       out$methY<-methY
       out$e_value<-calcEValue(intput_dat,y,tmp_start,tmp_stop)
