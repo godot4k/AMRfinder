@@ -69,60 +69,154 @@ is_contiguous <- function(x) {
   length(unique(rle_x$values)) == length(rle_x$values)
 }
 
+metilene_kscdf <- function(x) {
+  if (!is.finite(x) || x < 0) return(1)
+  sum_value <- 0
+  old <- 0
+  coeff <- 1
+  base <- -2 * x * x
+  for (k in seq_len(100)) {
+    tmp <- exp(base * k * k)
+    sum_value <- sum_value + coeff * tmp
+    if (tmp <= 1e-3 * old || tmp <= 1e-8 * sum_value) {
+      return(max(0, min(1, 2 * sum_value)))
+    }
+    coeff <- -coeff
+    old <- tmp
+  }
+  1
+}
+
+metilene_calc_max <- function(l1, l2, c1, c2, a, b, m, n) {
+  l1a <- l1[a + 1]
+  l2a <- l2[a + 1]
+  l1b <- l1[b + 1]
+  l2b <- l2[b + 1]
+  max(
+    abs((c1 / m) - (c2 / n)),
+    abs(((c1 + l1[1]) / m) - ((c2 + l2[1]) / n)),
+    abs(((c1 + l1a) / m) - ((c2 + l2a) / n)),
+    abs(((c1 + l1b) / m) - ((c2 + l2b) / n)),
+    abs(((c1 + l1[1] + l1a) / m) - ((c2 + l2[1] + l2a) / n)),
+    abs(((c1 + l1[1] + l1b) / m) - ((c2 + l2[1] + l2b) / n)),
+    abs(((c1 + l1b + l1a) / m) - ((c2 + l2b + l2a) / n)),
+    abs(((c1 + l1b + l1a + l1[1]) / m) - ((c2 + l2b + l2a + l2[1]) / n))
+  )
+}
+
+metilene_counter <- function(x, y, x0, x1, y0, y1) {
+  m <- length(x0)
+  n <- length(y0)
+  l_control <- c(
+    sum(x0 == x & x1 == y),
+    sum(x0 == x & x1 < y),
+    sum(x0 == x & x1 > y),
+    sum(x0 < x & x1 == y),
+    sum(x0 > x & x1 == y)
+  )
+  l_test <- c(
+    sum(y0 == x & y1 == y),
+    sum(y0 == x & y1 < y),
+    sum(y0 == x & y1 > y),
+    sum(y0 < x & y1 == y),
+    sum(y0 > x & y1 == y)
+  )
+  c_control <- c(
+    sum(x0 > x & x1 > y),
+    sum(x0 > x & x1 < y),
+    sum(x0 < x & x1 > y),
+    sum(x0 < x & x1 < y)
+  )
+  c_test <- c(
+    sum(y0 > x & y1 > y),
+    sum(y0 > x & y1 < y),
+    sum(y0 < x & y1 > y),
+    sum(y0 < x & y1 < y)
+  )
+  max(
+    metilene_calc_max(l_control, l_test, c_control[1], c_test[1], 2, 4, m, n),
+    metilene_calc_max(l_control, l_test, c_control[2], c_test[2], 1, 4, m, n),
+    metilene_calc_max(l_control, l_test, c_control[3], c_test[3], 2, 3, m, n),
+    metilene_calc_max(l_control, l_test, c_control[4], c_test[4], 1, 3, m, n)
+  )
+}
+
+safe_cor <- function(x, y) {
+  if (length(x) < 2 || sd(x) == 0 || sd(y) == 0) return(0)
+  value <- suppressWarnings(cor(x, y))
+  ifelse(is.finite(value), value, 0)
+}
+
+metilene_ks2d <- function(control_values, control_pos, test_values, test_pos) {
+  m <- length(control_values)
+  n <- length(test_values)
+  if (m == 0 || n == 0) return(c(p_value = 1, statistic = 0))
+  d_control <- 0
+  for (j in seq_len(m)) {
+    d_control <- max(
+      d_control,
+      metilene_counter(control_values[j], control_pos[j], control_values, control_pos, test_values, test_pos)
+    )
+  }
+  d_test <- 0
+  for (j in seq_len(n)) {
+    d_test <- max(
+      d_test,
+      metilene_counter(test_values[j], test_pos[j], control_values, control_pos, test_values, test_pos)
+    )
+  }
+  d_stat <- (d_control + d_test) * 0.5
+  s <- sqrt(m * n / (m + n))
+  cor_control <- safe_cor(control_values, control_pos)
+  cor_test <- safe_cor(test_values, test_pos)
+  denom <- 1 + sqrt(max(0, 1 - 0.5 * (cor_control * cor_control + cor_test * cor_test))) * (0.25 - 0.75 / s)
+  if (!is.finite(denom) || denom == 0) return(c(p_value = 1, statistic = d_stat))
+  p_value <- metilene_kscdf(d_stat * s / denom)
+  if (!is.finite(p_value)) p_value <- 1
+  c(p_value = p_value, statistic = d_stat)
+}
+
 cortest <- function(intput_dat, y, method = "pearson", cov.mod = NULL, a, b) {
-  set.seed(123)
   aa <- intput_dat[a:b, ]
   y_group <- as.numeric(y[, 1])
   if (!all(y_group %in% c(0, 1))) {
     stop("For control/test mode, y must be coded as 0 for control and 1 for test.")
   }
-  if (nrow(aa) <= 1) {
-    op.num <- 1
-  } else {
-    cls.num <- NULL
-    unique_points <- nrow(aa[, -c(1, 2)])
-    max_possible_k <- min(unique_points - 1, 4)
-    possible_ks <- 1:max_possible_k
-    possible_ks <- possible_ks[possible_ks > 0 & possible_ks <= unique_points]
-    for (k in possible_ks) {
-      cls <- tryCatch(
-        {
-          tmp_data <- aa[, -c(1, 2)]
-          tmp_data <- t(apply(tmp_data, 1, function(x) { x[is.na(x)] <- mean(x, na.rm = TRUE); if(all(is.na(x))) x <- rep(0, length(x)); x }))
-          kmeans(tmp_data, centers = k)
-        },
-        error = function(e) NULL
-      )
-      if (!is.null(cls) && is_contiguous(as.numeric(cls$cluster))) {
-        cls.num <- c(cls.num, k)
-      }
-    }
-    op.num <- ifelse(length(cls.num) > 0, max(cls.num), 1)
+  methylation <- aa[, -c(1, 2), drop = FALSE]
+  if (ncol(methylation) != length(y_group)) {
+    stop("The number of methylation sample columns must match the length of y.")
   }
-  if (op.num > 1) {
-    tmp_data_final <- aa[, -c(1, 2)]
-    tmp_data_final <- t(apply(tmp_data_final, 1, function(x) { x[is.na(x)] <- mean(x, na.rm = TRUE); if(all(is.na(x))) x <- rep(0, length(x)); x }))
-    cls.op <- kmeans(tmp_data_final, centers = op.num)
-    x.mean <- cls.op$centers
-    NR <- nrow(x.mean)
-    x <- as.numeric(unlist(x.mean))
-  } else {
-    x <- as.numeric(colMeans(aa[, -c(1, 2)], na.rm = TRUE))
-    NR <- 1
+  control_id <- which(y_group == 0)
+  test_id <- which(y_group == 1)
+  if (length(control_id) == 0 || length(test_id) == 0) {
+    stop("Both control (0) and test (1) samples are required for 2D-KS/MWU testing.")
   }
-  y_val <- rep(y_group, each = NR)
-  control_x <- x[y_val == 0]
-  test_x <- x[y_val == 1]
-  if (length(control_x) == 0 || length(test_x) == 0) {
-    stop("Both control (0) and test (1) samples are required for KS testing.")
+
+  pos <- as.numeric(aa$pos)
+  control_values <- as.numeric(t(as.matrix(methylation[, control_id, drop = FALSE])))
+  test_values <- as.numeric(t(as.matrix(methylation[, test_id, drop = FALSE])))
+  control_pos <- rep(pos, each = length(control_id))
+  test_pos <- rep(pos, each = length(test_id))
+  control_ok <- is.finite(control_values) & is.finite(control_pos)
+  test_ok <- is.finite(test_values) & is.finite(test_pos)
+  control_values <- control_values[control_ok]
+  control_pos <- control_pos[control_ok]
+  test_values <- test_values[test_ok]
+  test_pos <- test_pos[test_ok]
+  if (length(control_values) == 0 || length(test_values) == 0) {
+    return(c(1, 0, 0, 1))
   }
-  p_value <- suppressWarnings(ks.test(control_x, test_x)$p.value)
-  if (!is.finite(p_value)) p_value <- 1
-  ks_stat <- as.numeric(suppressWarnings(ks.test(control_x, test_x)$statistic))
-  if (!is.finite(ks_stat)) ks_stat <- 0
-  mean_diff <- mean(test_x, na.rm = TRUE) - mean(control_x, na.rm = TRUE)
+
+  ks2d <- metilene_ks2d(control_values, control_pos, test_values, test_pos)
+  ks2d_p <- as.numeric(ks2d[["p_value"]])
+  if (!is.finite(ks2d_p)) ks2d_p <- 1
+  ks2d_stat <- as.numeric(ks2d[["statistic"]])
+  if (!is.finite(ks2d_stat)) ks2d_stat <- 0
+  mwu_p <- suppressWarnings(wilcox.test(control_values, test_values, exact = FALSE)$p.value)
+  if (!is.finite(mwu_p)) mwu_p <- 1
+  mean_diff <- mean(test_values, na.rm = TRUE) - mean(control_values, na.rm = TRUE)
   if (!is.finite(mean_diff)) mean_diff <- 0
-  return(c(p_value, mean_diff, ks_stat))
+  return(c(ks2d_p, mean_diff, ks2d_stat, mwu_p))
 }
 
 calcEValue <- function(intput_dat, y, a, b) {
@@ -223,16 +317,16 @@ segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,K
   breaks<-NULL
   child<-0
   ab<-c(-1,0)
-  ks1<-c(2,2)
-  ks2<-c(2,2)
-  ks3<-c(2,2)
+  ks1<-c(2,0,0,2)
+  ks2<-c(2,0,0,2)
+  ks3<-c(2,0,0,2)
   while(length(stacks)||(a!=-1)){
     if((a!=-1)&&(child<=2)){
       if(ab[1]==-1){
         ab<-c(0,0)
-        ks1<-c(2,2)
-        ks2<-c(2,2)
-        ks3<-c(2,2)
+        ks1<-c(2,0,0,2)
+        ks2<-c(2,0,0,2)
+        ks3<-c(2,0,0,2)
         max_id<-findMaxZ(a,b,mincpgs,XS)
         ab<-(a-1)+max_id
         n<-a
@@ -267,7 +361,7 @@ segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,K
               child<-0
               ab[1]<--1
             }else{
-              bre<-list(chr=chr,start=n,stop=m,p_value=ks1[1],mean_diff=ks1[2],ks_stat=ks1[3])
+              bre<-list(chr=chr,start=n,stop=m,segment_p=ks1[1],p_value=ks1[4],mean_diff=ks1[2],ks_stat=ks1[3])
               breaks<-rbind(breaks,data.frame(bre))
             }
           }
@@ -284,7 +378,7 @@ segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,K
               child<-0
               ab[1]<--1
             }else{
-              bre<-list(chr=chr,start=n,stop=m,p_value=ks2[1],mean_diff=ks2[2],ks_stat=ks2[3])
+              bre<-list(chr=chr,start=n,stop=m,segment_p=ks2[1],p_value=ks2[4],mean_diff=ks2[2],ks_stat=ks2[3])
               breaks<-rbind(breaks,data.frame(bre))
             }
           }
@@ -301,14 +395,14 @@ segment_pSTKopt<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,K
               child<-0
               ab[1]<--1
             }else{
-              bre<-list(chr=chr,start=n,stop=m,p_value=ks3[1],mean_diff=ks3[2],ks_stat=ks3[3])
+              bre<-list(chr=chr,start=n,stop=m,segment_p=ks3[1],p_value=ks3[4],mean_diff=ks3[2],ks_stat=ks3[3])
               breaks<-rbind(breaks,data.frame(bre))
             }
           }
         }
       }else{
         if(child==0){
-          bre<-list(chr=chr,start=a,stop=b,p_value=KS[1],mean_diff=KS[2],ks_stat=KS[3])
+          bre<-list(chr=chr,start=a,stop=b,segment_p=KS[1],p_value=KS[4],mean_diff=KS[2],ks_stat=KS[3])
           breaks<-rbind(breaks,data.frame(bre))
         }
         a<--1
@@ -340,7 +434,7 @@ segmenterSTK<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,KS,m
   while(length(stacks)>0||a!=-1){
     if(a!=-1){
       bre<-segment_pSTKopt(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,KS,method)
-      i<-which(bre$p_value==min(bre$p_value))
+      i<-which(bre$segment_p==min(bre$segment_p))
       max<-bre[i,]
       max<-max[1,]
       stack<-list(a=a,b=b,max=max)
@@ -348,7 +442,7 @@ segmenterSTK<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,KS,m
       n<-a
       m<-max$start-1
       if(max$start>1&&n<=m){
-        ks<-c(2,2)
+        ks<-c(2,0,0,2)
         if(m-n+1>=mincpgs&&calcSingleTrendAbs(XS,n,m)>trend&&noValley(XS,n,m,mincpgs,valley)){
           ks<-cortest(intput_dat,y, method, cov.mod,n,m)
         }
@@ -369,7 +463,7 @@ segmenterSTK<-function(intput_dat,y,cov.mod,XS,a,b,chr,mincpgs,trend,valley,KS,m
       n<-max$stop+1
       m<-b
       if(n<=m){
-        ks<-c(2,2)
+        ks<-c(2,0,0,2)
         if(m-n+1>=mincpgs&&calcSingleTrendAbs(XS,n,m)>trend&&noValley(XS,n,m,mincpgs,valley)){
           ks<-cortest(intput_dat,y, method, cov.mod,n,m)
         }
@@ -417,12 +511,12 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
           tmp<-collapseTmp(tmp)
           tmp_start<-as.integer(as.numeric(unlist(tmp$start))[1])
           tmp_stop<-as.integer(as.numeric(unlist(tmp$stop))[1])
-          ks<-c(2,2)
+          ks<-c(2,0,0,2)
           if(isTRUE((tmp_stop-tmp_start+1>=mincpgs)[1])&&isTRUE((calcSingleTrendAbs(XS,tmp_start,tmp_stop)>trend)[1])&&isTRUE((noValley(XS,tmp_start,tmp_stop,mincpgs,valley)==1)[1])){
             ks<-cortest(intput_dat,y, method, cov.mod,tmp_start,tmp_stop)
           }
           if(ks[1]<2){
-            out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,ks_stat = ks[3],mean_diff=ks[2],p_value=ks[1])
+            out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,ks_stat = ks[3],mean_diff=ks[2],p_value=ks[4])
             methX <- mean(as.numeric(as.matrix(intput_dat[tmp_start:tmp_stop, -c(1, 2)])), na.rm = TRUE)
             methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
             out$methX<-methX
@@ -446,12 +540,12 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
     tmp<-collapseTmp(tmp)
     tmp_start<-as.integer(as.numeric(unlist(tmp$start))[1])
     tmp_stop<-as.integer(as.numeric(unlist(tmp$stop))[1])
-    ks<-c(2,2)
+    ks<-c(2,0,0,2)
     if(isTRUE((tmp_stop-tmp_start+1>=mincpgs)[1])&&isTRUE((calcSingleTrendAbs(XS,tmp_start,tmp_stop)>trend)[1])&&isTRUE((noValley(XS,tmp_start,tmp_stop,mincpgs,valley)==1)[1])){
       ks<-cortest(intput_dat,y, method, cov.mod,tmp_start,tmp_stop)
     }
     if(ks[1]<2){
-      out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,ks_stat = ks[3],mean_diff=ks[2],p_value=ks[1])
+      out<-data.frame(chr=chr,start=intput_dat$pos[tmp_start]-1,stop=intput_dat$pos[tmp_stop],q=-1,length=tmp_stop-tmp_start+1,ks_stat = ks[3],mean_diff=ks[2],p_value=ks[4])
       methX <- mean(as.numeric(as.matrix(intput_dat[tmp_start:tmp_stop, -c(1, 2)])), na.rm = TRUE)
       methY <- mean(as.numeric(as.matrix(y)), na.rm = TRUE)
       out$methX<-methX
@@ -465,7 +559,7 @@ output<-function(intput_dat,y,cov.mod,XS,global,chr,mincpgs,trend,valley,method)
 }
 
 segmentation<-function(intput_dat,y,cov.mod,chr,mincpgs,trend,valley,method){
-  ks<-c(2,2)
+  ks<-c(2,0,0,2)
   len<-nrow(intput_dat)
   XS<-calcSingleDiffSum(intput_dat,y)
   if(len-1>=mincpgs&&calcSingleTrendAbs(XS,1,len)>trend&&noValley(XS,1,len,mincpgs,valley)){
